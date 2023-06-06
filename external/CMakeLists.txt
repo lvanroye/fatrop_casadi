@@ -1,0 +1,2 @@
+add_subdirectory(casadi)
+add_subdirectory(fatrop)
