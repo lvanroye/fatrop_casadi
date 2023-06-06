@@ -48,7 +48,15 @@ namespace fatrop_casadi
     };
     class SingleStageOptiAdapter
     {
+    public:
         SingleStageOptiAdapter(const SingleStage &ss)
+        {
+            // add variables
+            add_variables(ss, opti);
+            // add constraints
+            add_constraints(ss, opti);
+        };
+        void add_variables(const SingleStage &ss, casadi::Opti &opti)
         {
             // add x variables to opti
             for (int k = 0; k < ss.dims.K; k++)
@@ -61,6 +69,9 @@ namespace fatrop_casadi
                 stage_params.push_back(opti.parameter(ss.dims.n_stage_params));
             // add the global parameters to opti
             global_params = opti.parameter(ss.dims.n_global_params);
+        }
+        void add_constraints(const SingleStage &ss, casadi::Opti &opti)
+        {
 
             // add the dynamics constraints
             for (int k = 0; k < ss.dims.K - 1; k++)
@@ -72,8 +83,7 @@ namespace fatrop_casadi
                 opti.subject_to(casadi::Opti::bounded(0, ss.eqP({x[k], u[k], stage_params[k], global_params})[0], 0));
             // add the final eq constraint
             opti.subject_to(casadi::Opti::bounded(0, ss.eqF({x[ss.dims.K - 1], stage_params[ss.dims.K - 1], global_params})[0], 0));
-
-        };
+        }
         casadi::Opti opti;
         std::vector<casadi::MX> x;
         std::vector<casadi::MX> u;
