@@ -22,8 +22,7 @@ namespace fatrop_casadi
     struct SingleStage
     {
         // problem dimensions
-        const SingleStageDims dims;
-        // discrete dynamics function
+        SingleStageDims dims;
         const casadi::Function dynamics;
         // cost function
         const casadi::Function costI;
@@ -43,8 +42,44 @@ namespace fatrop_casadi
         const casadi::Function eqI;
         const casadi::Function eqP;
         const casadi::Function eqF;
-        // initial guess
-        // default parameters
+        // discrete dynamics function
+        casadi::MX state(const std::string &name, int m, int n)
+        {
+            auto x = casadi::MX::sym(name, m, n);
+            vec_x.push_back(x);
+            return x;
+        }
+        casadi::MX control(const std::string &name, int m, int n)
+        {
+            auto u = casadi::MX::sym(name, m, n);
+            vec_u.push_back(u);
+            return u;
+        }
+        casadi::MX parameter(const std::string &name, int m, int n)
+        {
+            auto p = casadi::MX::sym(name, m, n);
+            vec_p.push_back(p);
+            return p;
+        }
+        casadi::MX stage_parameter(const std::string &name, int m, int n)
+        {
+            auto p = casadi::MX::sym(name, m, n);
+            vec_p_stage.push_back(p);
+            return p;
+        }
+        void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, bool initial, bool middle, bool terminal)
+        {
+        }
+        void add_objective(const casadi::MX &c, bool initial, bool middle, bool terminal){
+
+        };
+        std::vector<casadi::MX> vec_x;
+        std::vector<casadi::MX> vec_u;
+        std::vector<casadi::MX> vec_p;
+        std::vector<casadi::MX> vec_p_stage;
+        std::vector<casadi::MX> vec_c_initial;
+        std::vector<casadi::MX> vec_c_middle;
+        std::vector<casadi::MX> vec_c_terminal;
     };
     class SingleStageOptiAdapter
     {
