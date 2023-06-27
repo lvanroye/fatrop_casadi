@@ -13,5 +13,6 @@ int main()
     opti.solver("ipopt");
     // solve the problem
     auto sol = opti.solve();
+    sol = opti.solve();
     return 0;
 }
