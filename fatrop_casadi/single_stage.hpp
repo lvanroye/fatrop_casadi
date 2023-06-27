@@ -36,7 +36,7 @@ namespace fatrop_casadi
             dirty = true;
             auto x = casadi::MX::sym(name, m, n);
             vec_x.push_back(x);
-            vec_x_next.push_back(casadi::MX::zeros(m, n));
+            map_x_next[x] = casadi::MX::zeros(m, n);
             return x;
         }
         casadi::MX control(const std::string &name, int m, int n)
@@ -90,7 +90,6 @@ namespace fatrop_casadi
             std::vector<casadi::DM> ub_c;
             std::vector<casadi::MX> obj;
         };
-        std::vector<casadi::MX> vec_x_next;
         std::map<casadi::MX, casadi::MX, comp_mx> map_x_next;
         stage_properties stage_properties_initial;
         stage_properties stage_properties_path;
@@ -137,6 +136,11 @@ namespace fatrop_casadi
             auto u = veccat(vec_u);
             auto p = veccat(vec_p);
             auto p_stage = veccat(vec_p_stage);
+            std::vector<casadi::MX> vec_x_next;
+            for(auto& x : map_x_next)
+            {
+                vec_x_next.push_back(x.second);
+            }
             auto x_next = veccat(vec_x_next);
             // make the dynamics function
             dynamics_func = casadi::Function("dynamics", {x, u, p, p_stage}, {x_next}, {"x", "u", "p", "p_stage"}, {"x_next"});
