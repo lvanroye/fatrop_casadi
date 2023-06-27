@@ -28,6 +28,11 @@ namespace fatrop_casadi
     };
     struct SingleStage
     {
+        SingleStage(const int K)
+        {
+            dims.K = K;
+            dirty = true;
+        }
         // problem dimensions
         SingleStageDims dims;
         // discrete dynamics function
@@ -63,20 +68,52 @@ namespace fatrop_casadi
         void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, bool initial, bool middle, bool terminal)
         {
             dirty = true;
+            if(initial)
+            {
+                stage_properties_initial.vec_c.push_back(c);
+                stage_properties_initial.lb_c.push_back(lb);
+                stage_properties_initial.ub_c.push_back(ub);
+            }
+            if(middle)
+            {
+                stage_properties_path.vec_c.push_back(c);
+                stage_properties_path.lb_c.push_back(lb);
+                stage_properties_path.ub_c.push_back(ub);
+            }
+            if(terminal)
+            {
+                stage_properties_terminal.vec_c.push_back(c);
+                stage_properties_terminal.lb_c.push_back(lb);
+                stage_properties_terminal.ub_c.push_back(ub);
+            }
+
         }
         void add_objective(const casadi::MX &c, bool initial, bool middle, bool terminal)
         {
             dirty = true;
+            if(initial)
+            {
+                stage_properties_initial.obj.push_back(c);
+            }
+            if(middle)
+            {
+                stage_properties_path.obj.push_back(c);
+            }
+            if(terminal)
+            {
+                stage_properties_terminal.obj.push_back(c);
+            }
+
         };
         void set_next(const casadi::MX &x, const casadi::MX &x_next)
         {
             dirty = true;
             map_x_next[x] = x_next;
         }
-        void set_initial(const casadi::MX& x, const casadi::DM& value)
+        void set_initial(const casadi::MX &x, const casadi::DM &value)
         {
         }
-        void set_value(const casadi::MX& x, const casadi::DM& value)
+        void set_value(const casadi::MX &x, const casadi::DM &value)
         {
         }
         std::vector<casadi::MX> vec_x;
@@ -117,7 +154,7 @@ namespace fatrop_casadi
         {
             for (int i = 0; i < eqs.rows(); i++)
             {
-                if ((double) lbs(i, 0) == (double) ubs(i, 0))
+                if ((double)lbs(i, 0) == (double)ubs(i, 0))
                 {
                     eq = vertcat(eq, eqs(i, 0) - lbs(i, 0));
                 }
@@ -136,21 +173,28 @@ namespace fatrop_casadi
             auto u = veccat(vec_u);
             auto p = veccat(vec_p);
             auto p_stage = veccat(vec_p_stage);
+            dims.nx = (int)x.numel();
+            dims.nu = (int)u.numel();
+            dims.n_global_params = (int)p.numel();
+            dims.n_stage_params = (int)p_stage.numel();
+
             std::vector<casadi::MX> vec_x_next;
-            for(auto& x : map_x_next)
+            for (auto &x : map_x_next)
             {
                 vec_x_next.push_back(x.second);
             }
             auto x_next = veccat(vec_x_next);
             // make the dynamics function
             dynamics_func = casadi::Function("dynamics", {x, u, p, p_stage}, {x_next}, {"x", "u", "p", "p_stage"}, {"x_next"});
-            std::vector<stage_functions*> stage_fcs = {&stage_functions_initial, &stage_functions_path, &stage_functions_terminal}; 
-            std::vector<stage_properties*> stage_props = {&stage_properties_initial, &stage_properties_path, &stage_properties_terminal};
+            std::vector<stage_functions *> stage_fcs = {&stage_functions_initial, &stage_functions_path, &stage_functions_terminal};
+            std::vector<stage_properties *> stage_props = {&stage_properties_initial, &stage_properties_path, &stage_properties_terminal};
+            std::vector<int *> ng_v = {&dims.ngI, &dims.ng, &dims.ngF};
+            std::vector<int *> ngineq_v = {&dims.ng_ineqI, &dims.ng_ineq, &dims.ng_ineqF};
             // initial stage
-            for(int i=0; i<3; i++)
+            for (int i = 0; i < 3; i++)
             {
-                auto& stage_functions_curr = *stage_fcs.at(i);
-                auto& stage_properties_curr = *stage_props.at(i);
+                auto &stage_functions_curr = *stage_fcs.at(i);
+                auto &stage_properties_curr = *stage_props.at(i);
                 stage_functions_curr.cost = casadi::Function("cost", {x, u, p, p_stage}, {sum(stage_properties_curr.obj)}, {"x", "u", "p", "p_stage"}, {"cost"});
                 auto eqs = casadi::MX::veccat(stage_properties_curr.vec_c);
                 auto lbs = casadi::DM::veccat(stage_properties_curr.lb_c);
@@ -164,6 +208,8 @@ namespace fatrop_casadi
                 stage_functions_curr.ineq = casadi::Function("ineq", {x, u, p, p_stage}, {ineq}, {"x", "u", "p", "p_stage"}, {"ineq"});
                 stage_functions_curr.ineq_lb = lb;
                 stage_functions_curr.ineq_ub = ub;
+                *ng_v.at(i) = (int)eq.numel();
+                *ngineq_v.at(i) = (int)ineq.numel();
             }
         }
         bool dirty = true;
@@ -171,8 +217,9 @@ namespace fatrop_casadi
     class SingleStageOptiAdapter
     {
     public:
-        SingleStageOptiAdapter(const SingleStage &ss)
+        SingleStageOptiAdapter(SingleStage &ss)
         {
+            ss.make_clean();
             // add variables
             add_variables(ss, opti);
             // add constraints
@@ -201,17 +248,23 @@ namespace fatrop_casadi
             for (int k = 0; k < ss.dims.K - 1; k++)
                 opti.subject_to(casadi::Opti::bounded(0, x[k + 1] - ss.dynamics_func({x[k], u[k], stage_params[k], global_params})[0], 0));
             // add the initial eq constraint
-            opti.subject_to(casadi::Opti::bounded(0, ss.stage_functions_initial.eq({x[0], u[0], stage_params[0], global_params})[0], 0));
-            opti.subject_to(casadi::Opti::bounded(ss.stage_functions_initial.ineq_lb, ss.stage_functions_initial.ineq({x[0], u[0], stage_params[0], global_params})[0], ss.stage_functions_initial.ineq_ub));
+            if (ss.dims.ngI > 0)
+                opti.subject_to(casadi::Opti::bounded(0, ss.stage_functions_initial.eq({x[0], u[0], stage_params[0], global_params})[0], 0));
+            if (ss.dims.ng_ineqI > 0)
+                opti.subject_to(casadi::Opti::bounded(ss.stage_functions_initial.ineq_lb, ss.stage_functions_initial.ineq({x[0], u[0], stage_params[0], global_params})[0], ss.stage_functions_initial.ineq_ub));
             // add the path eq constraints
             for (int k = 1; k < ss.dims.K - 1; k++)
             {
-                opti.subject_to(casadi::Opti::bounded(0, ss.stage_functions_path.eq({x[k], u[k], stage_params[k], global_params})[0], 0));
-                opti.subject_to(casadi::Opti::bounded(ss.stage_functions_path.ineq_lb, ss.stage_functions_path.ineq({x[k], u[k], stage_params[k], global_params})[0], ss.stage_functions_path.ineq_ub));
+                if (ss.dims.ng > 0)
+                    opti.subject_to(casadi::Opti::bounded(0, ss.stage_functions_path.eq({x[k], u[k], stage_params[k], global_params})[0], 0));
+                if (ss.dims.ng_ineq > 0)
+                    opti.subject_to(casadi::Opti::bounded(ss.stage_functions_path.ineq_lb, ss.stage_functions_path.ineq({x[k], u[k], stage_params[k], global_params})[0], ss.stage_functions_path.ineq_ub));
             }
             // add the final eq constraint
-            opti.subject_to(casadi::Opti::bounded(0, ss.stage_functions_terminal.eq({x[0], u[0], stage_params[0], global_params})[0], 0));
-            opti.subject_to(casadi::Opti::bounded(ss.stage_functions_terminal.ineq_lb, ss.stage_functions_terminal.ineq({x[ss.dims.K - 1], u[ss.dims.K - 2], stage_params[ss.dims.K - 1], global_params})[0], ss.stage_functions_terminal.ineq_ub));
+            if (ss.dims.ngF > 0)
+                opti.subject_to(casadi::Opti::bounded(0, ss.stage_functions_terminal.eq({x[0], u[0], stage_params[0], global_params})[0], 0));
+            if (ss.dims.ng_ineqF > 0)
+                opti.subject_to(casadi::Opti::bounded(ss.stage_functions_terminal.ineq_lb, ss.stage_functions_terminal.ineq({x[ss.dims.K - 1], u[ss.dims.K - 2], stage_params[ss.dims.K - 1], global_params})[0], ss.stage_functions_terminal.ineq_ub));
         }
         void add_objective(const SingleStage &ss, casadi::Opti &opti)
         {

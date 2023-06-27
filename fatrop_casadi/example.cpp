@@ -1,24 +1,26 @@
 #include "single_stage.hpp"
 #include <casadi/casadi.hpp>
 
+using namespace fatrop_casadi;
 int main()
 {
-    auto x = casadi::MX::sym("x", 1, 1);
-    auto u = casadi::MX::sym("u", 1, 1);
-    auto p = x;
-    std::cout << u.get() << std::endl;
-    std::cout << x.get() << std::endl;
-    std::cout << p.get() << std::endl;
-    // // create a simple test opti problem
-    // casadi::Opti opti;
-    // // add x variables to opti
-    // auto x =  opti.variable(1);
-    // // set objective
-    // opti.minimize(x*x);
-    // // create solver instance
-    // opti.solver("ipopt");
-    // // solve the problem
-    // auto sol = opti.solve();
-    // sol = opti.solve();
+    auto ocp = SingleStage(50);
+    auto x1 = ocp.state("x1", 1, 1);
+    auto x2 = ocp.state("x2", 1, 1);
+    auto u = ocp.control("u", 1, 1);
+    auto e = 1 - x1 * x1 - x2 * x2;
+    double dt = 0.02;
+    ocp.set_next(x1, (e*x1 - x2 + u)*dt);
+    ocp.set_next(x2, x1*dt);
+    ocp.add_objective(u*u, true, true, true);
+    ocp.subject_to({0}, x1 - 1, {0}, true, false, false);
+    ocp.subject_to({0}, x2 - 2, {0}, true, false, false);
+
+
+
+    auto opti = SingleStageOptiAdapter(ocp).opti;
+    opti.solver("ipopt");
+    opti.solve();
+
     return 0;
 }
