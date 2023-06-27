@@ -2,7 +2,7 @@
 #include <casadi/casadi.hpp>
 #include <ocp/OCPAbstract.hpp>
 #include <vector>
-
+#include <map>
 namespace fatrop_casadi
 {
     struct SingleStageDims
@@ -19,24 +19,25 @@ namespace fatrop_casadi
         int n_global_params;
         int K;
     };
-    class MXWrap : public casadi::MX
+    struct comp_mx
     {
-    public:
-        MXWrap(const casadi::MX &mx, const int id) : casadi::MX(mx), id(id){};
-        const int id;
+        bool operator()(const casadi::MX &a, const casadi::MX &b) const
+        {
+            return a.get() < b.get();
+        }
     };
     struct SingleStage
     {
         // problem dimensions
         SingleStageDims dims;
         // discrete dynamics function
-        MXWrap state(const std::string &name, int m, int n)
+        casadi::MX state(const std::string &name, int m, int n)
         {
             dirty = true;
             auto x = casadi::MX::sym(name, m, n);
             vec_x.push_back(x);
             vec_x_next.push_back(casadi::MX::zeros(m, n));
-            return MXWrap(x, vec_x.size() - 1);
+            return x;
         }
         casadi::MX control(const std::string &name, int m, int n)
         {
@@ -67,10 +68,16 @@ namespace fatrop_casadi
         {
             dirty = true;
         };
-        void set_next(const MXWrap &x, const casadi::MX &x_next)
+        void set_next(const casadi::MX &x, const casadi::MX &x_next)
         {
             dirty = true;
-            vec_x_next[x.id] = x_next;
+            map_x_next[x] = x_next;
+        }
+        void set_initial(const casadi::MX& x, const casadi::DM& value)
+        {
+        }
+        void set_value(const casadi::MX& x, const casadi::DM& value)
+        {
         }
         std::vector<casadi::MX> vec_x;
         std::vector<casadi::MX> vec_u;
@@ -84,6 +91,7 @@ namespace fatrop_casadi
             std::vector<casadi::MX> obj;
         };
         std::vector<casadi::MX> vec_x_next;
+        std::map<casadi::MX, casadi::MX, comp_mx> map_x_next;
         stage_properties stage_properties_initial;
         stage_properties stage_properties_path;
         stage_properties stage_properties_terminal;
