@@ -1,6 +1,6 @@
 #pragma once
 #include <casadi/casadi.hpp>
-#include <ocp/OCPAbstract.hpp>
+#include <ocp/StageOCP.hpp>
 #include <vector>
 #include <map>
 namespace fatrop_casadi
@@ -68,42 +68,40 @@ namespace fatrop_casadi
         void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, bool initial, bool middle, bool terminal)
         {
             dirty = true;
-            if(initial)
+            if (initial)
             {
                 stage_properties_initial.vec_c.push_back(c);
                 stage_properties_initial.lb_c.push_back(lb);
                 stage_properties_initial.ub_c.push_back(ub);
             }
-            if(middle)
+            if (middle)
             {
                 stage_properties_path.vec_c.push_back(c);
                 stage_properties_path.lb_c.push_back(lb);
                 stage_properties_path.ub_c.push_back(ub);
             }
-            if(terminal)
+            if (terminal)
             {
                 stage_properties_terminal.vec_c.push_back(c);
                 stage_properties_terminal.lb_c.push_back(lb);
                 stage_properties_terminal.ub_c.push_back(ub);
             }
-
         }
         void add_objective(const casadi::MX &c, bool initial, bool middle, bool terminal)
         {
             dirty = true;
-            if(initial)
+            if (initial)
             {
                 stage_properties_initial.obj.push_back(c);
             }
-            if(middle)
+            if (middle)
             {
                 stage_properties_path.obj.push_back(c);
             }
-            if(terminal)
+            if (terminal)
             {
                 stage_properties_terminal.obj.push_back(c);
             }
-
         };
         void set_next(const casadi::MX &x, const casadi::MX &x_next)
         {
@@ -284,7 +282,117 @@ namespace fatrop_casadi
         std::vector<casadi::MX> stage_params;
         casadi::MX global_params;
     };
-    // class SingleStageFatropAdapter : public fatrop::StageOCP
-    // {
-    // };
+    class SingleStageFatropAdapter : public fatrop::StageOCP
+    {
+    public:
+        SingleStageFatropAdapter(SingleStage &ss) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K)
+        {
+            auto x_sym = casadi::MX::sym("x", ss.dims.nx);
+            auto xp1_sym = casadi::MX::sym("xp1", ss.dims.nx);
+            auto u_sym = casadi::MX::sym("u", ss.dims.nu);
+            auto stage_params_sym = casadi::MX::sym("stage_params", ss.dims.n_stage_params);
+            auto global_params_sym = casadi::MX::sym("global_params", ss.dims.n_global_params);
+            auto BAbt = casadi::MX::zeros(ss.dims.nu + ss.dims.nx + 1, ss.dims.nx);
+            auto b = casadi::MX::zeros(ss.dims.nx, 1);
+            auto x_next_sym = ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
+            b = xp1_sym - x_next_sym;
+            BAbt(casadi::Slice(0, ss.dims.nu + ss.dims.nx), casadi::Slice(0, ss.dims.nx)) = casadi::MX::jacobian(ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0], casadi::MX::vertcat({u_sym, x_sym}));
+            BAbt(ss.dims.nu + ss.dims.nx, casadi::Slice(0, ss.dims.nx)) = b;
+            eval_BAbtk = eval_bf(casadi::Function("eval_BAbtk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {BAbt}));
+            eval_bk = eval_bf(casadi::Function("eval_bk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {b}));
+            std::vector<stageproperties*> sp_vec = {&sp_initial, &sp_middle, &sp_terminal};
+            std::vector<SingleStage::stage_functions*>  sf_vec = {&ss.stage_functions_initial, &ss.stage_functions_path, &ss.stage_functions_terminal};
+            std::vector<int> ng_vec = {ss.dims.ngI, ss.dims.ng, ss.dims.ngF};
+            std::vector<int> ng_ineq_vec = {ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF};
+            for(int i =0; i<3; i++)
+            {
+                auto sp_p = sp_vec[i];
+                auto sf_p = sf_vec[i];
+                const int nx = (i==2)?0:ss.dims.nx;
+                const int ng = ng_vec[i];
+                const int ng_ineq = ng_ineq_vec[i];
+                auto ux = (i==2)?x_sym:casadi::MX::vertcat({u_sym, x_sym});
+                // compute RSQrqt 
+                auto obj = sf_p->cost({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
+                casadi::MX rq;
+                auto RSQ = casadi::MX::hessian(obj, ux, rq);
+                // lagrangian contribution dynamics constraints
+                auto dual_dyn_sym = casadi::MX::sym("dual_dyn", nx);
+                if(i!=2)
+                {
+                    auto rq_dyn = casadi::MX::zeros(ss.dims.nu+nx, 1);
+                    auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_dyn_sym, x_next_sym), ux, rq_dyn);
+                    RSQ += RSQlag;
+                    rq += rq_dyn; 
+                }
+                // lagrangian contribution of euqality constraints
+                if(ng>0)
+                {
+                    auto dual_eq_sym = casadi::MX::sym("dual_eq", ng);
+                    auto eq_sym = sf_p->eq({x_sym, u_sym, stage_params_sym, global_params_sym});
+                    auto eq = eq_sym[0];
+                    auto rq_eq = casadi::MX::zeros(ss.dims.nu+nx, 1);
+                    auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_eq_sym, eq), ux, rq_eq);
+                    RSQ += RSQlag;
+                    rq += rq_eq;
+                }
+                // lagraigian contribution of inequality constraints
+                if(ng_ineq>0)
+                {
+                    auto dual_ineq_sym = casadi::MX::sym("dual_ineq", ng_ineq);
+                    auto ineq_sym = sf_p->ineq({x_sym, u_sym, stage_params_sym, global_params_sym});
+                    auto ineq = ineq_sym[0];
+                    auto rq_ineq = casadi::MX::zeros(ss.dims.nu+nx, 1);
+                    auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_ineq_sym, ineq), ux, rq_ineq);
+                    RSQ += RSQlag;
+                    rq += rq_ineq;
+                }
+                // assemble RSQrqt
+                auto RSQrqt = casadi::MX::zeros(ss.dims.nu + nx + 1, ss.dims.nu + nx);
+                RSQrqt(casadi::Slice(0, ss.dims.nu+nx), casadi::Slice(0, ss.dims.nu+nx)) = RSQ;
+                RSQrqt(ss.dims.nu+nx, casadi::Slice(0, ss.dims.nu+nx)) = rq;
+                // prepare the function 
+                sp_p -> eval_RSQrqtk = eval_bf(casadi::Function("eval_RSQrqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {RSQrqt}));
+            }
+
+        };
+
+    private:
+        class eval_bf
+        {
+        public:
+            eval_bf():m(0), n(0), bufout(0){};
+            eval_bf(const casadi::Function &func) : m((int)func.size1_out(0)), n((int)func.size2_out(0)), func(func), bufout(m * n){};
+            void operator()(const std::vector<const double *> &arg, MAT *res)
+            {
+                // TODO: use workspace buffers to avoid allocation
+                func(arg, {bufout.data()});
+                PACKMAT(m, n, bufout.data(), m, res, 0, 0);
+            }
+            void operator()(const std::vector<const double *> &arg, double *res)
+            {
+                func(arg, {res});
+            }
+            int m;
+            int n;
+            std::vector<double> bufout;
+            casadi::Function func;
+        };
+        eval_bf eval_BAbtk;
+        eval_bf eval_bk;
+        struct stageproperties
+        {
+            eval_bf eval_Lk;
+            eval_bf eval_RSQrqtk;
+            eval_bf eval_rqk;
+            eval_bf eval_Ggtk;
+            eval_bf eval_gk;
+            eval_bf eval_Ggt_ineqk;
+            eval_bf eval_gineqk;
+        };
+        stageproperties sp_initial;
+        stageproperties sp_middle;
+        stageproperties sp_terminal;
+    };
+
 } // namespace fatrop_casadi
