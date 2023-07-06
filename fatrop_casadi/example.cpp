@@ -20,12 +20,12 @@ int main()
 
 
 
-    auto opti = SingleStageOptiAdapter(ocp).opti;
-    opti.solver("ipopt");
-    opti.solve();
+    // auto opti = SingleStageOptiAdapter(ocp).opti;
+    // opti.solver("ipopt");
+    // opti.solve();
 
     ocp.make_clean();
-    auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp);
+    auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp, casadi::Dict({{"post_expand", true}, {"jit", true}, {"compiler", "shell"}, {"jit_options", casadi::Dict({{"flags", "-O3 -march=native -ffast-math -fPIC -shared"}})}}));
     auto app = fatrop::StageOCPApplication(fatrop);
     app.build();
     app.optimize();

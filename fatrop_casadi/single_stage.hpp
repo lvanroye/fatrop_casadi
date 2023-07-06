@@ -285,7 +285,7 @@ namespace fatrop_casadi
     class SingleStageFatropAdapter : public fatrop::StageOCP
     {
     public:
-        SingleStageFatropAdapter(SingleStage &ss) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K), arg(7)
+        SingleStageFatropAdapter(SingleStage &ss, const casadi::Dict &opts = {}) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K), arg(7)
         {
             auto x_sym = casadi::MX::sym("x", ss.dims.nx);
             auto xp1_sym = casadi::MX::sym("xp1", ss.dims.nx);
@@ -298,8 +298,8 @@ namespace fatrop_casadi
             b = -xp1_sym + x_next_sym;
             BAbt(casadi::Slice(0, ss.dims.nu + ss.dims.nx), casadi::Slice(0, ss.dims.nx)) = casadi::MX::jacobian(ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0], casadi::MX::vertcat({u_sym, x_sym})).T();
             BAbt(ss.dims.nu + ss.dims.nx, casadi::Slice(0, ss.dims.nx)) = b;
-            eval_BAbtk_func = eval_bf(casadi::Function("eval_BAbtk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(BAbt)}).expand());
-            eval_bk_func = eval_bf(casadi::Function("eval_bk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(b)}).expand());
+            eval_BAbtk_func = eval_bf(casadi::Function("eval_BAbtk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(BAbt)}, opts));
+            eval_bk_func = eval_bf(casadi::Function("eval_bk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(b)}, opts));
             std::vector<stageproperties *> sp_vec = {&sp_initial, &sp_middle, &sp_terminal};
             std::vector<SingleStage::stage_functions *> sf_vec = {&ss.stage_functions_initial, &ss.stage_functions_path, &ss.stage_functions_terminal};
             std::vector<int> ng_vec = {ss.dims.ngI, ss.dims.ng, ss.dims.ngF};
@@ -314,10 +314,10 @@ namespace fatrop_casadi
                 auto ux = (i == 2) ? x_sym : casadi::MX::vertcat({u_sym, x_sym});
                 // compute RSQrqt
                 auto obj = sf_p->cost({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
-                sp_p->eval_Lk_func = eval_bf(casadi::Function("eval_Lk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(obj)}).expand());
+                sp_p->eval_Lk_func = eval_bf(casadi::Function("eval_Lk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(obj)}, opts));
                 casadi::MX rq;
                 auto RSQ = casadi::MX::hessian(obj, ux, rq);
-                sp_p->eval_rqk_func = eval_bf(casadi::Function("eval_rqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(rq)}).expand());
+                sp_p->eval_rqk_func = eval_bf(casadi::Function("eval_rqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(rq)}, opts));
                 // lagrangian contribution dynamics constraints
                 auto dual_dyn_sym = casadi::MX::sym("dual_dyn", ss.dims.nx);
                 if (i != 2)
@@ -337,11 +337,11 @@ namespace fatrop_casadi
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_eq_sym, eq), ux, rq_eq);
                     RSQ += RSQlag;
                     rq += rq_eq;
-                    sp_p->eval_gk_func = eval_bf(casadi::Function("eval_eqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(eq)}).expand());
+                    sp_p->eval_gk_func = eval_bf(casadi::Function("eval_eqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(eq)}, opts));
                     auto Ggt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng);
                     Ggt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng)) = casadi::MX::jacobian(eq, ux).T();
                     Ggt(nu + ss.dims.nx, casadi::Slice(0, ng)) = eq.T();
-                    sp_p->eval_Ggtk_func = eval_bf(casadi::Function("eval_Ggtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggt)}).expand());
+                    sp_p->eval_Ggtk_func = eval_bf(casadi::Function("eval_Ggtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggt)}, opts));
                 }
                 // lagraigian contribution of inequality constraints
                 auto dual_ineq_sym = casadi::MX::sym("dual_ineq", ng_ineq);
@@ -353,28 +353,19 @@ namespace fatrop_casadi
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_ineq_sym, ineq), ux, rq_ineq);
                     RSQ += RSQlag;
                     rq += rq_ineq;
-                    sp_p->eval_gineqk_func = eval_bf(casadi::Function("eval_ineqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(ineq)}).expand());
+                    sp_p->eval_gineqk_func = eval_bf(casadi::Function("eval_ineqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(ineq)}, opts));
                     auto Ggineqt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng_ineq);
                     Ggineqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
                     Ggineqt(nu + ss.dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
-                    sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}).expand());
+                    sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}, opts));
                 }
                 // assemble RSQrqt
                 auto RSQrqt = casadi::MX::zeros(nu + ss.dims.nx + 1, nu + ss.dims.nx);
                 RSQrqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx)) = RSQ;
                 RSQrqt(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)) = rq.T();
                 // prepare the function
-                sp_p->eval_RSQrqtk_func = eval_bf(casadi::Function("eval_RSQrqtk", {
-                                                                                       x_sym,
-                                                                                       u_sym,
-                                                                                       stage_params_sym,
-                                                                                       global_params_sym,
-                                                                                       dual_dyn_sym,
-                                                                                       dual_eq_sym,
-                                                                                       dual_ineq_sym
-                                                                                   },
-                                                                   {casadi::MX::densify(RSQrqt)})
-                                                      .expand());
+                sp_p->eval_RSQrqtk_func = eval_bf(casadi::Function("eval_RSQrqtk", {x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
+                                                                   {casadi::MX::densify(RSQrqt)}, opts));
             }
         };
         int eval_BAbtk(const double *states_kp1,
@@ -593,24 +584,44 @@ namespace fatrop_casadi
         {
         public:
             eval_bf() : m(0), n(0), bufout(0){};
-            eval_bf(const casadi::Function &func) : m((int)func.size1_out(0)), n((int)func.size2_out(0)), func(func), bufout(m * n), dirty(false){};
-            void operator()(const std::vector<const double *> &arg, MAT *res)
+            // eval_bf(const casadi::Function &func) : m((int)func.size1_out(0)), n((int)func.size2_out(0)), func(casadi::Function::create(func.get(), {{"jit", true}})), bufout(m * n), dirty(false){};
+            // eval_bf(const casadi::Function &funcin) : m((int)funcin.size1_out(0)), n((int)funcin.size2_out(0)), func(casadi::Function::create(funcin.get(), {{"jit", false}, {"compiler", "shell"}})), bufout(m * n), dirty(false){};
+            eval_bf(const casadi::Function &funcin) : m((int)funcin.size1_out(0)), n((int)funcin.size2_out(0)), func(funcin)
+            {
+                // allocate work vectors
+                size_t sz_arg, sz_res, sz_iw, sz_w;
+                func.sz_work(sz_arg, sz_res, sz_iw, sz_w);
+                iw.resize(sz_iw);
+                w.resize(sz_w);
+                bufout.resize(m*n);
+                bufdata = {bufout.data()};
+                resdata = {nullptr, nullptr, nullptr, nullptr};
+                dirty = false;
+            };
+            void operator()(std::vector<const double *> &arg, MAT *res)
             {
                 if (dirty)
                     return;
                 // TODO: use workspace buffers to avoid allocation
-                func(arg, {bufout.data()});
+                func(arg.data(), bufdata.data(), iw.data(), w.data(), 0);
+                // func(arg, bufdata);
                 PACKMAT(m, n, bufout.data(), m, res, 0, 0);
             }
-            void operator()(const std::vector<const double *> &arg, double *res)
+            void operator()(std::vector<const double *> &arg, double *res)
             {
                 if (dirty)
                     return;
-                func(arg, {res});
+                resdata[0] = res;
+                func(arg.data(), resdata.data(), iw.data(), w.data(), 0);
+                // func(arg, resdata);
             }
             int m;
             int n;
             std::vector<double> bufout;
+            std::vector<double *> bufdata;
+            std::vector<double *> resdata;
+            std::vector<long long int> iw;
+            std::vector<double> w;
             casadi::Function func;
             bool dirty = true;
         };
