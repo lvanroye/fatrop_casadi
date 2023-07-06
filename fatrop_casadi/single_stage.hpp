@@ -150,6 +150,10 @@ namespace fatrop_casadi
         }
         void seperate_constraints(const casadi::DM &lbs, const casadi::MX &eqs, const casadi::DM &ubs, casadi::MX &eq, casadi::DM &lb, casadi::MX &ineq, casadi::DM &ub)
         {
+            eq = casadi::MX::zeros(0,0);
+            ineq = casadi::MX::zeros(0,0);
+            lb = casadi::DM::zeros(0,0);
+            ub = casadi::DM::zeros(0,0);
             for (int i = 0; i < eqs.rows(); i++)
             {
                 if ((double)lbs(i, 0) == (double)ubs(i, 0))
@@ -159,8 +163,8 @@ namespace fatrop_casadi
                 else
                 {
                     ineq = vertcat(ineq, eqs(i, 0));
-                    lb = vertcat(lbs, lbs(i, 0));
-                    ub = vertcat(ubs, ubs(i, 0));
+                    lb = vertcat(lb, lbs(i, 0));
+                    ub = vertcat(ub, ubs(i, 0));
                 }
             }
         }
@@ -358,6 +362,14 @@ namespace fatrop_casadi
                     Ggineqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
                     Ggineqt(nu + ss.dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
                     sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}, opts));
+                    // add inequality bounds 
+                    sp_p -> lower.resize(ng_ineq);
+                    sp_p -> upper.resize(ng_ineq);
+                    for(int j = 0; j < ng_ineq; j++)
+                    {
+                        sp_p -> lower[j] = (double) sf_p -> ineq_lb(j,0);
+                        sp_p -> upper[j] = (double) sf_p -> ineq_ub(j,0);
+                    }
                 }
                 // assemble RSQrqt
                 auto RSQrqt = casadi::MX::zeros(nu + ss.dims.nx + 1, nu + ss.dims.nx);
@@ -568,6 +580,30 @@ namespace fatrop_casadi
         };
         int get_boundsk(double *lower, double *upper, const int k) const override
         {
+            int ngineq = this->get_ng_ineq_k(k);
+            const double * lower_ineq;
+            const double * upper_ineq;
+            if(k==0)
+            {
+                lower_ineq = sp_initial.lower.data();
+                upper_ineq = sp_initial.upper.data();
+            }
+            else if(k==K_-1)
+            {
+                lower_ineq = sp_terminal.lower.data();
+                upper_ineq = sp_terminal.upper.data();
+            }
+            else
+            {
+                lower_ineq = sp_middle.lower.data();
+                upper_ineq = sp_middle.upper.data();
+            }
+
+            for(int j = 0; j < ngineq; j++)
+            {
+                lower[j] = lower_ineq[j];
+                upper[j] = upper_ineq[j];
+            }
             return 0;
         };
         int get_default_stage_paramsk(double *stage_params_res, const int k) const override
@@ -636,6 +672,8 @@ namespace fatrop_casadi
             eval_bf eval_gk_func;
             eval_bf eval_Ggt_ineqk_func;
             eval_bf eval_gineqk_func;
+            std::vector<double> lower;
+            std::vector<double> upper;
         };
         stageproperties sp_initial;
         stageproperties sp_middle;
