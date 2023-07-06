@@ -17,7 +17,7 @@ int main()
     ocp.add_objective(u*u, true, true, true);
     ocp.subject_to({0}, x1 - 1, {0}, true, false, false);
     ocp.subject_to({0}, x2 - 2, {0}, true, false, false);
-    ocp.subject_to({-1000}, x2, {-10}, false, false, true);
+    ocp.subject_to({-1000}, x2, {2}, false, true, true);
 
 
 
