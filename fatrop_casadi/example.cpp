@@ -1,5 +1,7 @@
 #include "single_stage.hpp"
 #include <casadi/casadi.hpp>
+#include <ocp/StageOCPApplication.hpp>
+#include <memory>
 
 using namespace fatrop_casadi;
 int main()
@@ -21,6 +23,12 @@ int main()
     auto opti = SingleStageOptiAdapter(ocp).opti;
     opti.solver("ipopt");
     opti.solve();
+
+    ocp.make_clean();
+    auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp);
+    auto app = fatrop::StageOCPApplication(fatrop);
+    app.build();
+    app.optimize();
 
     return 0;
 }

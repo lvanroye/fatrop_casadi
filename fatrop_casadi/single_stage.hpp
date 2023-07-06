@@ -285,7 +285,7 @@ namespace fatrop_casadi
     class SingleStageFatropAdapter : public fatrop::StageOCP
     {
     public:
-        SingleStageFatropAdapter(SingleStage &ss) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K)
+        SingleStageFatropAdapter(SingleStage &ss) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K), arg(7)
         {
             auto x_sym = casadi::MX::sym("x", ss.dims.nx);
             auto xp1_sym = casadi::MX::sym("xp1", ss.dims.nx);
@@ -295,104 +295,341 @@ namespace fatrop_casadi
             auto BAbt = casadi::MX::zeros(ss.dims.nu + ss.dims.nx + 1, ss.dims.nx);
             auto b = casadi::MX::zeros(ss.dims.nx, 1);
             auto x_next_sym = ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
-            b = xp1_sym - x_next_sym;
-            BAbt(casadi::Slice(0, ss.dims.nu + ss.dims.nx), casadi::Slice(0, ss.dims.nx)) = casadi::MX::jacobian(ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0], casadi::MX::vertcat({u_sym, x_sym}));
+            b = -xp1_sym + x_next_sym;
+            BAbt(casadi::Slice(0, ss.dims.nu + ss.dims.nx), casadi::Slice(0, ss.dims.nx)) = casadi::MX::jacobian(ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0], casadi::MX::vertcat({u_sym, x_sym})).T();
             BAbt(ss.dims.nu + ss.dims.nx, casadi::Slice(0, ss.dims.nx)) = b;
-            eval_BAbtk = eval_bf(casadi::Function("eval_BAbtk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {BAbt}));
-            eval_bk = eval_bf(casadi::Function("eval_bk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {b}));
-            std::vector<stageproperties*> sp_vec = {&sp_initial, &sp_middle, &sp_terminal};
-            std::vector<SingleStage::stage_functions*>  sf_vec = {&ss.stage_functions_initial, &ss.stage_functions_path, &ss.stage_functions_terminal};
+            eval_BAbtk_func = eval_bf(casadi::Function("eval_BAbtk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(BAbt)}).expand());
+            eval_bk_func = eval_bf(casadi::Function("eval_bk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(b)}).expand());
+            std::vector<stageproperties *> sp_vec = {&sp_initial, &sp_middle, &sp_terminal};
+            std::vector<SingleStage::stage_functions *> sf_vec = {&ss.stage_functions_initial, &ss.stage_functions_path, &ss.stage_functions_terminal};
             std::vector<int> ng_vec = {ss.dims.ngI, ss.dims.ng, ss.dims.ngF};
             std::vector<int> ng_ineq_vec = {ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF};
-            for(int i =0; i<3; i++)
+            for (int i = 0; i < 3; i++)
             {
                 auto sp_p = sp_vec[i];
                 auto sf_p = sf_vec[i];
-                const int nx = (i==2)?0:ss.dims.nx;
+                const int nu = (i == 2) ? 0 : ss.dims.nu;
                 const int ng = ng_vec[i];
                 const int ng_ineq = ng_ineq_vec[i];
-                auto ux = (i==2)?x_sym:casadi::MX::vertcat({u_sym, x_sym});
-                // compute RSQrqt 
+                auto ux = (i == 2) ? x_sym : casadi::MX::vertcat({u_sym, x_sym});
+                // compute RSQrqt
                 auto obj = sf_p->cost({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
+                sp_p->eval_Lk_func = eval_bf(casadi::Function("eval_Lk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(obj)}).expand());
                 casadi::MX rq;
                 auto RSQ = casadi::MX::hessian(obj, ux, rq);
+                sp_p->eval_rqk_func = eval_bf(casadi::Function("eval_rqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(rq)}).expand());
                 // lagrangian contribution dynamics constraints
-                auto dual_dyn_sym = casadi::MX::sym("dual_dyn", nx);
-                if(i!=2)
+                auto dual_dyn_sym = casadi::MX::sym("dual_dyn", ss.dims.nx);
+                if (i != 2)
                 {
-                    auto rq_dyn = casadi::MX::zeros(ss.dims.nu+nx, 1);
+                    auto rq_dyn = casadi::MX::zeros(nu + ss.dims.nx, 1);
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_dyn_sym, x_next_sym), ux, rq_dyn);
                     RSQ += RSQlag;
-                    rq += rq_dyn; 
+                    rq += rq_dyn;
                 }
                 // lagrangian contribution of euqality constraints
-                if(ng>0)
+                auto dual_eq_sym = casadi::MX::sym("dual_eq", ng);
+                if (ng > 0)
                 {
-                    auto dual_eq_sym = casadi::MX::sym("dual_eq", ng);
                     auto eq_sym = sf_p->eq({x_sym, u_sym, stage_params_sym, global_params_sym});
                     auto eq = eq_sym[0];
-                    auto rq_eq = casadi::MX::zeros(ss.dims.nu+nx, 1);
+                    auto rq_eq = casadi::MX::zeros(nu + ss.dims.nx, 1);
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_eq_sym, eq), ux, rq_eq);
                     RSQ += RSQlag;
                     rq += rq_eq;
+                    sp_p->eval_gk_func = eval_bf(casadi::Function("eval_eqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(eq)}).expand());
+                    auto Ggt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng);
+                    Ggt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng)) = casadi::MX::jacobian(eq, ux).T();
+                    Ggt(nu + ss.dims.nx, casadi::Slice(0, ng)) = eq.T();
+                    sp_p->eval_Ggtk_func = eval_bf(casadi::Function("eval_Ggtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggt)}).expand());
                 }
                 // lagraigian contribution of inequality constraints
-                if(ng_ineq>0)
+                auto dual_ineq_sym = casadi::MX::sym("dual_ineq", ng_ineq);
+                if (ng_ineq > 0)
                 {
-                    auto dual_ineq_sym = casadi::MX::sym("dual_ineq", ng_ineq);
                     auto ineq_sym = sf_p->ineq({x_sym, u_sym, stage_params_sym, global_params_sym});
                     auto ineq = ineq_sym[0];
-                    auto rq_ineq = casadi::MX::zeros(ss.dims.nu+nx, 1);
+                    auto rq_ineq = casadi::MX::zeros(nu + ss.dims.nx, 1);
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_ineq_sym, ineq), ux, rq_ineq);
                     RSQ += RSQlag;
                     rq += rq_ineq;
+                    sp_p->eval_gineqk_func = eval_bf(casadi::Function("eval_ineqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(ineq)}).expand());
+                    auto Ggineqt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng_ineq);
+                    Ggineqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
+                    Ggineqt(nu + ss.dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
+                    sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}).expand());
                 }
                 // assemble RSQrqt
-                auto RSQrqt = casadi::MX::zeros(ss.dims.nu + nx + 1, ss.dims.nu + nx);
-                RSQrqt(casadi::Slice(0, ss.dims.nu+nx), casadi::Slice(0, ss.dims.nu+nx)) = RSQ;
-                RSQrqt(ss.dims.nu+nx, casadi::Slice(0, ss.dims.nu+nx)) = rq;
-                // prepare the function 
-                sp_p -> eval_RSQrqtk = eval_bf(casadi::Function("eval_RSQrqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {RSQrqt}));
+                auto RSQrqt = casadi::MX::zeros(nu + ss.dims.nx + 1, nu + ss.dims.nx);
+                RSQrqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx)) = RSQ;
+                RSQrqt(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)) = rq.T();
+                // prepare the function
+                sp_p->eval_RSQrqtk_func = eval_bf(casadi::Function("eval_RSQrqtk", {
+                                                                                       x_sym,
+                                                                                       u_sym,
+                                                                                       stage_params_sym,
+                                                                                       global_params_sym,
+                                                                                       dual_dyn_sym,
+                                                                                       dual_eq_sym,
+                                                                                       dual_ineq_sym
+                                                                                   },
+                                                                   {casadi::MX::densify(RSQrqt)})
+                                                      .expand());
             }
-
         };
+        int eval_BAbtk(const double *states_kp1,
+                       const double *inputs_k,
+                       const double *states_k,
+                       const double *stage_params_k,
+                       const double *global_params,
+                       MAT *res,
+                       const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = states_kp1;
+            arg[2] = inputs_k;
+            arg[3] = stage_params_k;
+            arg[4] = global_params;
+            eval_BAbtk_func(arg, res);
+            return 0;
+        };
+        int eval_RSQrqtk(const double *objective_scale,
+                         const double *inputs_k,
+                         const double *states_k,
+                         const double *lam_dyn_k,
+                         const double *lam_eq_k,
+                         const double *lam_ineq_k,
+                         const double *stage_params_k,
+                         const double *global_params,
+                         MAT *res,
+                         const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            arg[4] = lam_dyn_k;
+            arg[5] = lam_eq_k;
+            arg[6] = lam_ineq_k;
+            if (k == 0)
+                sp_initial.eval_RSQrqtk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_RSQrqtk_func(arg, res);
+            else
+                sp_middle.eval_RSQrqtk_func(arg, res);
+            return 0;
+        }
+        int eval_Ggtk(
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            MAT *res,
+            const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            if (k == 0)
+                sp_initial.eval_Ggtk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_Ggtk_func(arg, res);
+            else
+                sp_middle.eval_Ggtk_func(arg, res);
+            return 0;
+        }
+        int eval_Ggt_ineqk(
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            MAT *res,
+            const int k)
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            if (k == 0)
+                sp_initial.eval_Ggt_ineqk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_Ggt_ineqk_func(arg, res);
+            else
+                sp_middle.eval_Ggt_ineqk_func(arg, res);
+            return 0;
+        }
+        int eval_bk(
+            const double *states_kp1,
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            double *res,
+            const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = states_kp1;
+            arg[2] = inputs_k;
+            arg[3] = stage_params_k;
+            arg[4] = global_params;
+            eval_bk_func(arg, res);
+            return 0;
+        }
+        int eval_gk(
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            double *res,
+            const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            if (k == 0)
+                sp_initial.eval_gk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_gk_func(arg, res);
+            else
+                sp_middle.eval_gk_func(arg, res);
+            return 0;
+        }
+        int eval_gineqk(
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            double *res,
+            const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            if (k == 0)
+                sp_initial.eval_gineqk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_gineqk_func(arg, res);
+            else
+                sp_middle.eval_gineqk_func(arg, res);
+            return 0;
+        }
+        int eval_rqk(
+            const double *objective_scale,
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            double *res,
+            const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            if (k == 0)
+                sp_initial.eval_rqk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_rqk_func(arg, res);
+            else
+                sp_middle.eval_rqk_func(arg, res);
+            return 0;
+        }
+
+        int eval_Lk(
+            const double *objective_scale,
+            const double *inputs_k,
+            const double *states_k,
+            const double *stage_params_k,
+            const double *global_params,
+            double *res,
+            const int k) override
+        {
+            arg[0] = states_k;
+            arg[1] = inputs_k;
+            arg[2] = stage_params_k;
+            arg[3] = global_params;
+            if (k == 0)
+                sp_initial.eval_Lk_func(arg, res);
+            else if (k == K_ - 1)
+                sp_terminal.eval_Lk_func(arg, res);
+            else
+                sp_middle.eval_Lk_func(arg, res);
+            return 0;
+        }
+        int get_initial_xk(double *xk, const int k) const override
+        {
+            return 0;
+        };
+        int get_initial_uk(double *uk, const int k) const override
+        {
+            return 0;
+        };
+        int set_initial_xk(double *xk, const int k)
+        {
+            return 0;
+        };
+        int set_initial_uk(double *uk, const int k)
+        {
+            return 0;
+        };
+        int get_boundsk(double *lower, double *upper, const int k) const override
+        {
+            return 0;
+        };
+        int get_default_stage_paramsk(double *stage_params_res, const int k) const override
+        {
+            return 0;
+        }
+        int get_default_global_params(double *global_params_res) const override
+        {
+            return 0;
+        }
 
     private:
         class eval_bf
         {
         public:
-            eval_bf():m(0), n(0), bufout(0){};
-            eval_bf(const casadi::Function &func) : m((int)func.size1_out(0)), n((int)func.size2_out(0)), func(func), bufout(m * n){};
+            eval_bf() : m(0), n(0), bufout(0){};
+            eval_bf(const casadi::Function &func) : m((int)func.size1_out(0)), n((int)func.size2_out(0)), func(func), bufout(m * n), dirty(false){};
             void operator()(const std::vector<const double *> &arg, MAT *res)
             {
+                if (dirty)
+                    return;
                 // TODO: use workspace buffers to avoid allocation
                 func(arg, {bufout.data()});
                 PACKMAT(m, n, bufout.data(), m, res, 0, 0);
             }
             void operator()(const std::vector<const double *> &arg, double *res)
             {
+                if (dirty)
+                    return;
                 func(arg, {res});
             }
             int m;
             int n;
             std::vector<double> bufout;
             casadi::Function func;
+            bool dirty = true;
         };
-        eval_bf eval_BAbtk;
-        eval_bf eval_bk;
+        eval_bf eval_BAbtk_func; // OK
+        eval_bf eval_bk_func;    // OK
         struct stageproperties
         {
-            eval_bf eval_Lk;
-            eval_bf eval_RSQrqtk;
-            eval_bf eval_rqk;
-            eval_bf eval_Ggtk;
-            eval_bf eval_gk;
-            eval_bf eval_Ggt_ineqk;
-            eval_bf eval_gineqk;
+            eval_bf eval_Lk_func;      // OK
+            eval_bf eval_RSQrqtk_func; // OK
+            eval_bf eval_rqk_func;     // OK
+            eval_bf eval_Ggtk_func;
+            eval_bf eval_gk_func;
+            eval_bf eval_Ggt_ineqk_func;
+            eval_bf eval_gineqk_func;
         };
         stageproperties sp_initial;
         stageproperties sp_middle;
         stageproperties sp_terminal;
+        std::vector<const double *> arg;
     };
 
 } // namespace fatrop_casadi
