@@ -3,15 +3,73 @@
 #include <ocp/StageOCP.hpp>
 #include <vector>
 #include <map>
+#include <unordered_set>
 #include "casadi/core/function_internal.hpp"
 #include "casadi/core/function.hpp"
 #include "casadi/core/code_generator.hpp"
 #include "casadi/core/importer.hpp"
+#include <limits>
 #define JIT_HACKED_CASADI 0
 namespace fatrop_casadi
 {
     typedef int (*eval_t)(const double **arg, double **res,
                           long long int *iw, double *w, int);
+    enum stage
+    {
+        initial,
+        path,
+        terminal
+    };
+    template <typename der>
+    struct stagequantity
+    {
+        bool initial = false;
+        bool path = false;
+        bool terminal = false;
+        der &at_initial()
+        {
+            initial = true;
+            return static_cast<der &>(*this);
+        }
+        der &at_path()
+        {
+            path = true;
+            return static_cast<der &>(*this);
+        }
+        der &at_terminal()
+        {
+            terminal = true;
+            return static_cast<der &>(*this);
+        }
+    };
+
+    struct constraint : public stagequantity<constraint>
+    {
+        casadi::DM lb;
+        casadi::MX c;
+        casadi::DM ub;
+        constraint(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub)
+            : lb(lb), c(c), ub(ub)
+        {
+        }
+        static constraint equality(const casadi::MX &c)
+        {
+            return constraint{0, c, 0};
+        }
+        static constraint lower_bounded(const casadi::DM &lb, const casadi::MX &c)
+        {
+            return constraint{lb, c, std::numeric_limits<double>::infinity()};
+        }
+        static constraint upper_bounded(const casadi::MX &c, const casadi::DM &ub)
+        {
+            return constraint{-std::numeric_limits<double>::infinity(), c, ub};
+        }
+        static constraint box(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub)
+        {
+            return constraint{lb, c, ub};
+        }
+    };
+
     struct SingleStageDims
     {
         int nu;
@@ -72,6 +130,24 @@ namespace fatrop_casadi
             vec_p_stage.push_back(p);
             return p;
         }
+        void subject_to(const constraint &constraints)
+        {
+            std::unordered_set<stage> stages;
+            if (constraints.initial)
+                stages.insert(stage::initial);
+            if (constraints.path)
+                stages.insert(stage::path);
+            if (constraints.terminal)
+                stages.insert(stage::terminal);
+            subject_to(constraints.lb, constraints.c, constraints.ub, stages);
+        }
+        void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, const std::unordered_set<stage> &stages)
+        {
+            bool initial = stages.find(stage::initial) != stages.end();
+            bool middle = stages.find(stage::path) != stages.end();
+            bool terminal = stages.find(stage::terminal) != stages.end();
+            subject_to(lb, c, ub, initial, middle, terminal);
+        }
         void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, bool initial, bool middle, bool terminal)
         {
             dirty = true;
@@ -93,6 +169,13 @@ namespace fatrop_casadi
                 stage_properties_terminal.lb_c.push_back(lb);
                 stage_properties_terminal.ub_c.push_back(ub);
             }
+        }
+        void add_objective(const casadi::MX &c, const std::unordered_set<stage> &stages)
+        {
+            bool initial = stages.find(stage::initial) != stages.end();
+            bool middle = stages.find(stage::path) != stages.end();
+            bool terminal = stages.find(stage::terminal) != stages.end();
+            add_objective(c, initial, middle, terminal);
         }
         void add_objective(const casadi::MX &c, bool initial, bool middle, bool terminal)
         {
@@ -667,7 +750,7 @@ namespace fatrop_casadi
             void fast_jit()
             {
                 casadi::FunctionInternal *func_internal = func.get();
-                std::string jit_name_ = func.name();
+                jit_name_ = func.name();
                 jit_name_ = casadi::temporary_file(jit_name_, ".c");
                 jit_name_ = std::string(jit_name_.begin(), jit_name_.begin() + jit_name_.size() - 2);
                 if (func_internal->has_codegen())
@@ -679,18 +762,23 @@ namespace fatrop_casadi
                     opts["prefix"] = "jit";
                     casadi::CodeGenerator gen(jit_name_, opts);
                     gen.add(func);
-                    casadi::Dict jit_options_ = casadi::Dict({{"flags", "-Ofast -march=native -ffast-math"}});
-                    std::string jit_directory = casadi::get_from_dict(jit_options_, "directory", std::string(""));
+                    jit_options_ = casadi::Dict({{"flags", "-Ofast -march=native -ffast-math"}});
+                    jit_directory = casadi::get_from_dict(jit_options_, "directory", std::string(""));
                     std::string compiler_plugin_ = "shell";
                     compiler_ = casadi::Importer(gen.generate(jit_directory), compiler_plugin_, jit_options_);
                     eval_ = (eval_t)compiler_.get_function(func.name());
                     casadi_assert(eval_ != nullptr, "Cannot load JIT'ed function.");
+                    compiled_jit = true;
                 }
                 else
                 {
                     std::cout << "jit compilation not possible for the provided functions" << std::endl;
                 }
             }
+            std::string jit_name_;
+            casadi::Dict jit_options_;
+            std::string jit_directory;
+            bool compiled_jit = false;
             void operator=(const eval_bf &other)
             {
                 // copy all member values
@@ -744,7 +832,16 @@ namespace fatrop_casadi
 #endif
                 // func(arg, resdata);
             }
-            // ~eval_bf() { func.release(mem); }
+            ~eval_bf()
+            {
+                if(compiled_jit)
+                {
+                std::string jit_directory = get_from_dict(jit_options_, "directory", std::string(""));
+                std::string jit_name = jit_directory + jit_name_ + ".c";
+                if (remove(jit_name.c_str()))
+                    casadi_warning("Failed to remove " + jit_name);
+                }
+            }
             int m;
             int n;
             int mem;
