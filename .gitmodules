@@ -4,3 +4,6 @@
 [submodule "external/fatrop"]
 	path = external/fatrop
 	url = https://gitlab.kuleuven.be/robotgenskill/fatrop/fatrop.git
+[submodule "external/casadi"]
+	path = external/casadi
+	url = https://github.com/casadi/casadi.git
