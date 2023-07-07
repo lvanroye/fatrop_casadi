@@ -318,10 +318,10 @@ namespace fatrop_casadi
                 auto ux = (i == 2) ? x_sym : casadi::MX::vertcat({u_sym, x_sym});
                 // compute RSQrqt
                 auto obj = sf_p->cost({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
-                sp_p->eval_Lk_func = eval_bf(casadi::Function("eval_Lk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(obj)}, opts));
+                sp_p->eval_Lk_func = eval_bf(casadi::Function("eval_Lk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(obj)}, opts).expand());
                 casadi::MX rq;
                 auto RSQ = casadi::MX::hessian(obj, ux, rq);
-                sp_p->eval_rqk_func = eval_bf(casadi::Function("eval_rqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(rq)}, opts));
+                sp_p->eval_rqk_func = eval_bf(casadi::Function("eval_rqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(rq)}, opts).expand());
                 // lagrangian contribution dynamics constraints
                 auto dual_dyn_sym = casadi::MX::sym("dual_dyn", ss.dims.nx);
                 if (i != 2)
@@ -341,11 +341,11 @@ namespace fatrop_casadi
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_eq_sym, eq), ux, rq_eq);
                     RSQ += RSQlag;
                     rq += rq_eq;
-                    sp_p->eval_gk_func = eval_bf(casadi::Function("eval_eqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(eq)}, opts));
+                    sp_p->eval_gk_func = eval_bf(casadi::Function("eval_eqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(eq)}, opts).expand());
                     auto Ggt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng);
                     Ggt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng)) = casadi::MX::jacobian(eq, ux).T();
                     Ggt(nu + ss.dims.nx, casadi::Slice(0, ng)) = eq.T();
-                    sp_p->eval_Ggtk_func = eval_bf(casadi::Function("eval_Ggtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggt)}, opts));
+                    sp_p->eval_Ggtk_func = eval_bf(casadi::Function("eval_Ggtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggt)}, opts).expand());
                 }
                 // lagraigian contribution of inequality constraints
                 auto dual_ineq_sym = casadi::MX::sym("dual_ineq", ng_ineq);
@@ -357,11 +357,11 @@ namespace fatrop_casadi
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_ineq_sym, ineq), ux, rq_ineq);
                     RSQ += RSQlag;
                     rq += rq_ineq;
-                    sp_p->eval_gineqk_func = eval_bf(casadi::Function("eval_ineqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(ineq)}, opts));
+                    sp_p->eval_gineqk_func = eval_bf(casadi::Function("eval_ineqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(ineq)}, opts).expand());
                     auto Ggineqt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng_ineq);
                     Ggineqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
                     Ggineqt(nu + ss.dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
-                    sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}, opts));
+                    sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}, opts).expand());
                     // add inequality bounds
                     sp_p->lower.resize(ng_ineq);
                     sp_p->upper.resize(ng_ineq);
@@ -377,7 +377,7 @@ namespace fatrop_casadi
                 RSQrqt(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)) = rq.T();
                 // prepare the function
                 sp_p->eval_RSQrqtk_func = eval_bf(casadi::Function("eval_RSQrqtk", {x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
-                                                                   {casadi::MX::densify(RSQrqt)}, opts));
+                                                                   {casadi::MX::densify(RSQrqt)}, opts).expand());
             }
         };
         int eval_BAbtk(const double *states_kp1,
