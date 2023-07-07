@@ -150,10 +150,10 @@ namespace fatrop_casadi
         }
         void seperate_constraints(const casadi::DM &lbs, const casadi::MX &eqs, const casadi::DM &ubs, casadi::MX &eq, casadi::DM &lb, casadi::MX &ineq, casadi::DM &ub)
         {
-            eq = casadi::MX::zeros(0,0);
-            ineq = casadi::MX::zeros(0,0);
-            lb = casadi::DM::zeros(0,0);
-            ub = casadi::DM::zeros(0,0);
+            eq = casadi::MX::zeros(0, 0);
+            ineq = casadi::MX::zeros(0, 0);
+            lb = casadi::DM::zeros(0, 0);
+            ub = casadi::DM::zeros(0, 0);
             for (int i = 0; i < eqs.rows(); i++)
             {
                 if ((double)lbs(i, 0) == (double)ubs(i, 0))
@@ -362,13 +362,13 @@ namespace fatrop_casadi
                     Ggineqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
                     Ggineqt(nu + ss.dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
                     sp_p->eval_Ggt_ineqk_func = eval_bf(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}, opts));
-                    // add inequality bounds 
-                    sp_p -> lower.resize(ng_ineq);
-                    sp_p -> upper.resize(ng_ineq);
-                    for(int j = 0; j < ng_ineq; j++)
+                    // add inequality bounds
+                    sp_p->lower.resize(ng_ineq);
+                    sp_p->upper.resize(ng_ineq);
+                    for (int j = 0; j < ng_ineq; j++)
                     {
-                        sp_p -> lower[j] = (double) sf_p -> ineq_lb(j,0);
-                        sp_p -> upper[j] = (double) sf_p -> ineq_ub(j,0);
+                        sp_p->lower[j] = (double)sf_p->ineq_lb(j, 0);
+                        sp_p->upper[j] = (double)sf_p->ineq_ub(j, 0);
                     }
                 }
                 // assemble RSQrqt
@@ -581,14 +581,14 @@ namespace fatrop_casadi
         int get_boundsk(double *lower, double *upper, const int k) const override
         {
             int ngineq = this->get_ng_ineq_k(k);
-            const double * lower_ineq;
-            const double * upper_ineq;
-            if(k==0)
+            const double *lower_ineq;
+            const double *upper_ineq;
+            if (k == 0)
             {
                 lower_ineq = sp_initial.lower.data();
                 upper_ineq = sp_initial.upper.data();
             }
-            else if(k==K_-1)
+            else if (k == K_ - 1)
             {
                 lower_ineq = sp_terminal.lower.data();
                 upper_ineq = sp_terminal.upper.data();
@@ -599,7 +599,7 @@ namespace fatrop_casadi
                 upper_ineq = sp_middle.upper.data();
             }
 
-            for(int j = 0; j < ngineq; j++)
+            for (int j = 0; j < ngineq; j++)
             {
                 lower[j] = lower_ineq[j];
                 upper[j] = upper_ineq[j];
@@ -619,27 +619,57 @@ namespace fatrop_casadi
         class eval_bf
         {
         public:
-            eval_bf() : m(0), n(0), bufout(0){};
-            // eval_bf(const casadi::Function &func) : m((int)func.size1_out(0)), n((int)func.size2_out(0)), func(casadi::Function::create(func.get(), {{"jit", true}})), bufout(m * n), dirty(false){};
-            // eval_bf(const casadi::Function &funcin) : m((int)funcin.size1_out(0)), n((int)funcin.size2_out(0)), func(casadi::Function::create(funcin.get(), {{"jit", false}, {"compiler", "shell"}})), bufout(m * n), dirty(false){};
-            eval_bf(const casadi::Function &funcin) : m((int)funcin.size1_out(0)), n((int)funcin.size2_out(0)), func(funcin)
+            eval_bf(){};
+            eval_bf(const casadi::Function &funcin)
             {
+                m = (int)funcin.size1_out(0);
+                n = (int)funcin.size2_out(0);
+                func = funcin;
+                mem = 0;
                 // allocate work vectors
-                size_t sz_arg, sz_res, sz_iw, sz_w;
+                size_t sz_arg,
+                    sz_res, sz_iw, sz_w;
+                sz_arg = func.n_in();
+                sz_res = func.n_out();
                 func.sz_work(sz_arg, sz_res, sz_iw, sz_w);
                 iw.resize(sz_iw);
                 w.resize(sz_w);
-                bufout.resize(m*n);
-                bufdata = {bufout.data()};
-                resdata = {nullptr, nullptr, nullptr, nullptr};
+                bufout.resize(func.nnz_out(0));
+                bufdata.resize(sz_res);
+                resdata.resize(sz_res);
+                argdata.resize(sz_arg);
+                n_in = func.n_in();
+
+                // resdata = {nullptr};
                 dirty = false;
-            };
+            }
+            void operator=(const eval_bf &other)
+            {
+                // copy all member values
+                m = other.m;
+                n = other.n;
+                n_in = other.n_in;
+                func = other.func;
+                mem = other.mem;
+                bufout = other.bufout;
+                bufdata = other.bufdata;
+                resdata = other.resdata;
+                argdata = other.argdata;
+                iw = other.iw;
+                w = other.w;
+                dirty = other.dirty;
+            }
+            // copy operator
             void operator()(std::vector<const double *> &arg, MAT *res)
             {
                 if (dirty)
                     return;
-                // TODO: use workspace buffers to avoid allocation
-                func(arg.data(), bufdata.data(), iw.data(), w.data(), 0);
+                // inputs
+                for (int j = 0; j < n_in; j++)
+                    argdata[j] = arg[j];
+                // outputs
+                bufdata[0] = bufout.data();
+                func(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
                 // func(arg, bufdata);
                 PACKMAT(m, n, bufout.data(), m, res, 0, 0);
             }
@@ -647,15 +677,23 @@ namespace fatrop_casadi
             {
                 if (dirty)
                     return;
+                // inputs
+                for (int j = 0; j < n_in; j++)
+                    argdata[j] = arg[j];
+                // outputs
                 resdata[0] = res;
-                func(arg.data(), resdata.data(), iw.data(), w.data(), 0);
+                func(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
                 // func(arg, resdata);
             }
+            // ~eval_bf() { func.release(mem); }
             int m;
             int n;
+            int mem;
+            int n_in;
             std::vector<double> bufout;
             std::vector<double *> bufdata;
             std::vector<double *> resdata;
+            std::vector<const double *> argdata;
             std::vector<long long int> iw;
             std::vector<double> w;
             casadi::Function func;
