@@ -4,7 +4,7 @@
 #include <vector>
 #include <map>
 #include "casadi/core/function_internal.hpp"
-#define JIT_HACKED_CASADI
+#define JIT_HACKED_CASADI 0
 namespace fatrop_casadi
 {
     typedef int (*eval_t)(const double **arg, double **res,
@@ -656,8 +656,10 @@ namespace fatrop_casadi
                 resdata.resize(sz_res);
                 argdata.resize(sz_arg);
                 n_in = func.n_in();
+#ifdef JIT_HACKED_CASADI
                 casadi::FunctionInternal *func_internal = func.get();
                 eval_ = func_internal->eval_;
+#endif
 
                 // resdata = {nullptr};
                 dirty = false;
