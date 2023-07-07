@@ -4,6 +4,9 @@
 #include <vector>
 #include <map>
 #include "casadi/core/function_internal.hpp"
+#include "casadi/core/function.hpp"
+#include "casadi/core/code_generator.hpp"
+#include "casadi/core/importer.hpp"
 #define JIT_HACKED_CASADI 0
 namespace fatrop_casadi
 {
@@ -656,13 +659,37 @@ namespace fatrop_casadi
                 resdata.resize(sz_res);
                 argdata.resize(sz_arg);
                 n_in = func.n_in();
-#ifdef JIT_HACKED_CASADI
-                casadi::FunctionInternal *func_internal = func.get();
-                eval_ = func_internal->eval_;
-#endif
+                fast_jit();
 
                 // resdata = {nullptr};
                 dirty = false;
+            }
+            void fast_jit()
+            {
+                casadi::FunctionInternal *func_internal = func.get();
+                std::string jit_name_ = func.name();
+                jit_name_ = casadi::temporary_file(jit_name_, ".c");
+                jit_name_ = std::string(jit_name_.begin(), jit_name_.begin() + jit_name_.size() - 2);
+                if (func_internal->has_codegen())
+                {
+                    // this part is based on casadi/core/function_internal.cpp -- all rights reserved to the original authors
+                    // JIT everything
+                    casadi::Dict opts;
+                    // Override the default to avoid random strings in the generated code
+                    opts["prefix"] = "jit";
+                    casadi::CodeGenerator gen(jit_name_, opts);
+                    gen.add(func);
+                    casadi::Dict jit_options_ = casadi::Dict({{"flags", "-Ofast -march=native -ffast-math"}});
+                    std::string jit_directory = casadi::get_from_dict(jit_options_, "directory", std::string(""));
+                    std::string compiler_plugin_ = "shell";
+                    compiler_ = casadi::Importer(gen.generate(jit_directory), compiler_plugin_, jit_options_);
+                    eval_ = (eval_t)compiler_.get_function(func.name());
+                    casadi_assert(eval_ != nullptr, "Cannot load JIT'ed function.");
+                }
+                else
+                {
+                    std::cout << "jit compilation not possible for the provided functions" << std::endl;
+                }
             }
             void operator=(const eval_bf &other)
             {
@@ -679,10 +706,9 @@ namespace fatrop_casadi
                 iw = other.iw;
                 w = other.w;
                 dirty = other.dirty;
-#ifdef JIT_HACKED_CASADI
-                casadi::FunctionInternal *func_internal = func.get();
-                eval_ = func_internal->eval_;
-#endif
+                fast_jit();
+                // eval_ = other.eval_;
+                // other.eval_ = nullptr;
             }
             // copy operator
             void operator()(std::vector<const double *> &arg, MAT *res)
@@ -724,6 +750,7 @@ namespace fatrop_casadi
             int mem;
             int n_in;
             eval_t eval_;
+            casadi::Importer compiler_;
             std::vector<double> bufout;
             std::vector<double *> bufdata;
             std::vector<double *> resdata;
