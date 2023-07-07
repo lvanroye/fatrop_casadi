@@ -4,10 +4,11 @@
 #include <vector>
 #include <map>
 #include "casadi/core/function_internal.hpp"
+#define JIT_HACKED_CASADI
 namespace fatrop_casadi
 {
-  typedef int (*eval_t)(const double** arg, double** res,
-                        long long int* iw, double* w, int);
+    typedef int (*eval_t)(const double **arg, double **res,
+                          long long int *iw, double *w, int);
     struct SingleStageDims
     {
         int nu;
@@ -655,8 +656,8 @@ namespace fatrop_casadi
                 resdata.resize(sz_res);
                 argdata.resize(sz_arg);
                 n_in = func.n_in();
-                casadi::FunctionInternal * func_internal = func.get();
-                eval_ = func_internal -> eval_;
+                casadi::FunctionInternal *func_internal = func.get();
+                eval_ = func_internal->eval_;
 
                 // resdata = {nullptr};
                 dirty = false;
@@ -676,8 +677,10 @@ namespace fatrop_casadi
                 iw = other.iw;
                 w = other.w;
                 dirty = other.dirty;
-                // casadi::FunctionInternal * func_internal = func.get();
-                // eval_ = func_internal -> eval_;
+#ifdef JIT_HACKED_CASADI
+                casadi::FunctionInternal *func_internal = func.get();
+                eval_ = func_internal->eval_;
+#endif
             }
             // copy operator
             void operator()(std::vector<const double *> &arg, MAT *res)
@@ -689,8 +692,11 @@ namespace fatrop_casadi
                     argdata[j] = arg[j];
                 // outputs
                 bufdata[0] = bufout.data();
+#ifdef JIT_HACKED_CASADI
+                eval_(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
+#else
                 func(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
-                // eval_(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
+#endif
                 // func(arg, bufdata);
                 PACKMAT(m, n, bufout.data(), m, res, 0, 0);
             }
@@ -703,8 +709,11 @@ namespace fatrop_casadi
                     argdata[j] = arg[j];
                 // outputs
                 resdata[0] = res;
+#ifdef JIT_HACKED_CASADI
+                eval_(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
+#else
                 func(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
-                // eval_(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
+#endif
                 // func(arg, resdata);
             }
             // ~eval_bf() { func.release(mem); }
