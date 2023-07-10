@@ -1,4 +1,6 @@
 #include "single_stage.hpp"
+#include "single_stage_opti.hpp"
+#include "single_stage_fatrop.hpp"
 #include <casadi/casadi.hpp>
 #include <ocp/StageOCPApplication.hpp>
 #include <memory>
