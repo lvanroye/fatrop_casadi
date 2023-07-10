@@ -26,17 +26,17 @@ namespace fatrop_casadi
         bool initial = false;
         bool path = false;
         bool terminal = false;
-        der &at_initial()
+        const der &at_initial()
         {
             initial = true;
             return static_cast<der &>(*this);
         }
-        der &at_path()
+        const der &at_path()
         {
             path = true;
             return static_cast<der &>(*this);
         }
-        der &at_terminal()
+        const der &at_terminal()
         {
             terminal = true;
             return static_cast<der &>(*this);
@@ -93,6 +93,16 @@ namespace fatrop_casadi
     };
     struct SingleStage
     {
+        constraint at_t0(const constraint &c)
+        {
+            constraint res = c;
+            return res.at_initial();
+        }
+        constraint at_tf(const constraint &c)
+        {
+            constraint res = c;
+            return res.at_terminal();
+        }
         SingleStage(const int K)
         {
             dims.K = K;
@@ -107,6 +117,7 @@ namespace fatrop_casadi
             auto x = casadi::MX::sym(name, m, n);
             vec_x.push_back(x);
             map_x_next[x] = casadi::MX::zeros(m, n);
+            map_x_initial[x] = casadi::DM::zeros(m, n);
             return x;
         }
         casadi::MX control(const std::string &name, int m, int n)
@@ -114,6 +125,7 @@ namespace fatrop_casadi
             dirty = true;
             auto u = casadi::MX::sym(name, m, n);
             vec_u.push_back(u);
+            map_u_initial[u] = casadi::DM::zeros(m, n);
             return u;
         }
         casadi::MX parameter(const std::string &name, int m, int n)
@@ -200,6 +212,13 @@ namespace fatrop_casadi
         }
         void set_initial(const casadi::MX &x, const casadi::DM &value)
         {
+            // check if in state map
+            if (map_x_initial.find(x) != map_x_initial.end())
+                map_x_initial[x] = value;
+            else if (map_u_initial.find(x) != map_u_initial.end())
+                map_u_initial[x] = value;
+            else
+                throw std::runtime_error("set_initial: variable not found");
         }
         void set_value(const casadi::MX &x, const casadi::DM &value)
         {
@@ -216,6 +235,9 @@ namespace fatrop_casadi
             std::vector<casadi::MX> obj;
         };
         std::map<casadi::MX, casadi::MX, comp_mx> map_x_next;
+        std::map<casadi::MX, casadi::DM, comp_mx> map_x_initial;
+        std::map<casadi::MX, casadi::DM, comp_mx> map_u_initial;
+
         stage_properties stage_properties_initial;
         stage_properties stage_properties_path;
         stage_properties stage_properties_terminal;
@@ -231,6 +253,8 @@ namespace fatrop_casadi
         stage_functions stage_functions_initial;
         stage_functions stage_functions_path;
         stage_functions stage_functions_terminal;
+        std::vector<double> initial_x;
+        std::vector<double> initial_u;
         casadi::MX sum(const std::vector<casadi::MX> &vec)
         {
             casadi::MX sum = casadi::MX::zeros(1, 1);
@@ -304,6 +328,7 @@ namespace fatrop_casadi
                 *ngineq_v.at(i) = (int)ineq.numel();
             }
         }
+        // add all variables of map_initial_x to initial_x
         bool dirty = true;
     };
     class SingleStageOptiAdapter
@@ -379,7 +404,7 @@ namespace fatrop_casadi
     class SingleStageFatropAdapter : public fatrop::StageOCP
     {
     public:
-        SingleStageFatropAdapter(SingleStage &ss, const casadi::Dict &opts = {}) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K), arg(7)
+        SingleStageFatropAdapter(SingleStage &ss, const casadi::Dict &opts = {}) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K), arg(10)
         {
             auto x_sym = casadi::MX::sym("x", ss.dims.nx);
             auto xp1_sym = casadi::MX::sym("xp1", ss.dims.nx);
@@ -469,8 +494,82 @@ namespace fatrop_casadi
                 sp_p->eval_RSQrqtk_func = eval_bf(sx_func_helper(casadi::Function("eval_RSQrqtk", {x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
                                                                                   {casadi::MX::densify(RSQrqt)}),
                                                                  opts));
+                // prepare BFGS update function
+                auto RSQrqk = casadi::MX::sym("RSQrqk", nu + ss.dims.nx + 1, nu + ss.dims.nx);
+                auto Bk = RSQrqk(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx));
+                auto ux_prev = casadi::MX::sym("ux_prev", nu + ss.dims.nx);
+                auto rq_prev = RSQrqk(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)).T();
+                auto Bkp1 = update_bfgs(Bk, ux_prev, ux, rq_prev, rq);
+                auto RSQrq_bfgs = casadi::MX::vertcat({Bkp1, rq.T()});
+                sp_p->eval_update_bfgs_func = eval_bf(sx_func_helper(casadi::Function("eval_update_bfgs", {ux_prev, RSQrqk, x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
+                                                                                      {casadi::MX::densify(RSQrq_bfgs)}),
+                                                                     opts));
             }
+            reset_bfgs();
         };
+        casadi::MX update_bfgs(casadi::MX &Bk, casadi::MX &xk, casadi::MX &xkp1, casadi::MX &gradk, casadi::MX &gradkp1)
+        {
+            auto sk = xkp1 - xk;
+            auto yk = gradkp1 - gradk;
+            auto sty = casadi::MX::dot(yk, sk);
+            auto alpha = 1.0 / sty;
+            auto vk = casadi::MX::mtimes(Bk, sk);
+            auto beta = -1.0 / casadi::MX::dot(vk, sk);
+            auto Bkp1 = Bk + alpha * casadi::MX::mtimes(yk, yk.T()) + beta * casadi::MX::mtimes(vk, vk.T());
+            // with skipping
+            Bkp1 = casadi::MX::if_else(casadi::MX::norm_2(sk) *casadi::MX::norm_2(yk) < 1e8 *sty , Bkp1, Bk);
+            // Bkp1 = casadi::MX::if_else(casadi::MX::abs(beta) < 1e10, Bkp1, Bk);
+            return Bkp1;
+        }
+        void reset_bfgs()
+        {
+            RSQrq_bfgs_buf.resize(K_);
+            RSQrq_bfgs_temp.resize(K_);
+            ux_buff.resize(K_);
+            grad_buf.resize(K_);
+            for (int k = 0; k < K_; k++)
+            {
+                int nu = this->get_nuk(k);
+                int nx = this->get_nxk(k);
+                auto res = casadi::DM::zeros(nu + nx + 1, nu + nx);
+                res(casadi::Slice(0, nu + nx), casadi::Slice(0, nu + nx)) = casadi::DM::eye(nu + nx);
+                DM_to_raw(res, RSQrq_bfgs_buf[k]);
+                ux_buff[k] = std::vector<double>(nu + nx, 0.0);
+                grad_buf[k] = std::vector<double>(nu + nx, 0.0);
+                RSQrq_bfgs_temp[k] = std::vector<double>((nu + nx + 1) * (nu + nx), 0.0);
+            }
+        }
+        void DM_to_raw(const casadi::DM &in, std::vector<double> &out)
+        {
+            casadi::DM in_dense = casadi::DM::densify(in);
+            // casadi uses column major order
+            out.resize(in_dense.size1() * in_dense.size2());
+            for (size_t i = 0; i < in_dense.size2(); i++)
+            {
+                for (size_t j = 0; j < in_dense.size1(); j++)
+                {
+                    out[i * in_dense.size1() + j] = in_dense(j, i).scalar();
+                }
+            }
+        }
+        double dist_inf(const int m, const double *v1, const double *v2)
+        {
+            double res = 0.0;
+            for (int i = 0; i < m; i++)
+            {
+                res = std::max(res, std::abs(v1[i] - v2[i]));
+            }
+            return res;
+        }
+        bool is_zero(const int m, const double *v1)
+        {
+            for (int i = 0; i < m; i++)
+            {
+                if (v1[i] != 0.0)
+                    return false;
+            }
+            return true;
+        }
         int eval_BAbtk(const double *states_kp1,
                        const double *inputs_k,
                        const double *states_k,
@@ -487,6 +586,7 @@ namespace fatrop_casadi
             eval_BAbtk_func(arg, res);
             return 0;
         };
+        bool bfgs = true;
         int eval_RSQrqtk(const double *objective_scale,
                          const double *inputs_k,
                          const double *states_k,
@@ -498,20 +598,56 @@ namespace fatrop_casadi
                          MAT *res,
                          const int k) override
         {
-            arg[0] = states_k;
-            arg[1] = inputs_k;
-            arg[2] = stage_params_k;
-            arg[3] = global_params;
-            arg[4] = lam_dyn_k;
-            arg[5] = lam_eq_k;
-            arg[6] = lam_ineq_k;
-            if (k == 0)
-                sp_initial.eval_RSQrqtk_func(arg, res);
-            else if (k == K_ - 1)
-                sp_terminal.eval_RSQrqtk_func(arg, res);
+            if (bfgs)
+            {
+
+                int nu = this->get_nuk(k);
+                int nx = this->get_nxk(k);
+                arg[0] = ux_buff[k].data();
+                arg[1] = RSQrq_bfgs_buf[k].data();
+                arg[2] = states_k;
+                arg[3] = inputs_k;
+                arg[4] = stage_params_k;
+                arg[5] = global_params;
+                arg[6] = lam_dyn_k;
+                arg[7] = lam_eq_k;
+                arg[8] = lam_ineq_k;
+                if (k == 0)
+                    sp_initial.eval_update_bfgs_func(arg, res, RSQrq_bfgs_temp[k].data());
+                else if (k == K_ - 1)
+                    sp_terminal.eval_update_bfgs_func(arg, res, RSQrq_bfgs_temp[k].data());
+                else
+                    sp_middle.eval_update_bfgs_func(arg, res, RSQrq_bfgs_temp[k].data());
+
+                // copy elements from RSQrq_bfgs temp to RSQrq_bfgs_buf
+                for (int i = 0; i < RSQrq_bfgs_temp[k].size(); i++)
+                    RSQrq_bfgs_buf[k][i] = RSQrq_bfgs_temp[k][i];
+
+                // save ux
+                for (int i = 0; i < nu; i++)
+                    ux_buff[k][i] = inputs_k[i];
+                for (int i = 0; i < nx; i++)
+                    ux_buff[k][nu + i] = states_k[i];
+                // blasfeo_print_dmat(nu+nx+1, nu+nx, res, 0,0);
+                return 0;
+            }
             else
-                sp_middle.eval_RSQrqtk_func(arg, res);
-            return 0;
+            {
+                arg[0] = states_k;
+                arg[1] = inputs_k;
+                arg[2] = stage_params_k;
+                arg[3] = global_params;
+                arg[4] = lam_dyn_k;
+                arg[5] = lam_eq_k;
+                arg[6] = lam_ineq_k;
+                if (k == 0)
+                    sp_initial.eval_RSQrqtk_func(arg, res);
+                else if (k == K_ - 1)
+                    sp_terminal.eval_RSQrqtk_func(arg, res);
+                else
+                    sp_middle.eval_RSQrqtk_func(arg, res);
+                return 0;
+            }
         }
         int eval_Ggtk(
             const double *inputs_k,
@@ -798,8 +934,7 @@ namespace fatrop_casadi
                 // eval_ = other.eval_;
                 // other.eval_ = nullptr;
             }
-            // copy operator
-            void operator()(std::vector<const double *> &arg, MAT *res)
+            void operator()(std::vector<const double *> &arg, MAT *res, double *buff)
             {
                 if (dirty)
                     return;
@@ -807,14 +942,19 @@ namespace fatrop_casadi
                 for (int j = 0; j < n_in; j++)
                     argdata[j] = arg[j];
                 // outputs
-                bufdata[0] = bufout.data();
+                bufdata[0] = buff;
 #ifdef JIT_HACKED_CASADI
                 eval_(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
 #else
                 func(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
 #endif
                 // func(arg, bufdata);
-                PACKMAT(m, n, bufout.data(), m, res, 0, 0);
+                PACKMAT(m, n, buff, m, res, 0, 0);
+            }
+            // copy operator
+            void operator()(std::vector<const double *> &arg, MAT *res)
+            {
+                this->operator()(arg, res, bufout.data());
             }
             void operator()(std::vector<const double *> &arg, double *res)
             {
@@ -834,12 +974,12 @@ namespace fatrop_casadi
             }
             ~eval_bf()
             {
-                if(compiled_jit)
+                if (compiled_jit)
                 {
-                std::string jit_directory = get_from_dict(jit_options_, "directory", std::string(""));
-                std::string jit_name = jit_directory + jit_name_ + ".c";
-                if (remove(jit_name.c_str()))
-                    casadi_warning("Failed to remove " + jit_name);
+                    std::string jit_directory = get_from_dict(jit_options_, "directory", std::string(""));
+                    std::string jit_name = jit_directory + jit_name_ + ".c";
+                    if (remove(jit_name.c_str()))
+                        casadi_warning("Failed to remove " + jit_name);
                 }
             }
             int m;
@@ -856,14 +996,20 @@ namespace fatrop_casadi
             std::vector<double> w;
             casadi::Function func;
             bool dirty = true;
+            bool bfgs = true;
         };
+        std::vector<std::vector<double>> RSQrq_bfgs_buf;
+        std::vector<std::vector<double>> RSQrq_bfgs_temp;
+        std::vector<std::vector<double>> grad_buf;
+        std::vector<std::vector<double>> ux_buff;
         eval_bf eval_BAbtk_func; // OK
         eval_bf eval_bk_func;    // OK
         struct stageproperties
         {
-            eval_bf eval_Lk_func;      // OK
-            eval_bf eval_RSQrqtk_func; // OK
-            eval_bf eval_rqk_func;     // OK
+            eval_bf eval_Lk_func;          // OK
+            eval_bf eval_RSQrqtk_func;     // OK
+            eval_bf eval_update_bfgs_func; // OK
+            eval_bf eval_rqk_func;         // OK
             eval_bf eval_Ggtk_func;
             eval_bf eval_gk_func;
             eval_bf eval_Ggt_ineqk_func;

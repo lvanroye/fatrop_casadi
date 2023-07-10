@@ -3,7 +3,6 @@
 #include <ocp/StageOCPApplication.hpp>
 #include <memory>
 #include <limits>
-#define INF std::numeric_limits<double>::infinity()
 
 using namespace fatrop_casadi;
 int main()
@@ -17,10 +16,10 @@ int main()
     ocp.set_next(x1, (e * x1 - x2 + u) * dt);
     ocp.set_next(x2, x1 * dt);
     ocp.add_objective(u * u, {stage::initial, stage::path, stage::terminal});
-    ocp.subject_to(constraint::equality(x1 - 1).at_initial());
-    ocp.subject_to(constraint::equality(x2 - 2).at_initial());
+    ocp.subject_to(ocp.at_t0(constraint::equality(x1 - 1)));
+    ocp.subject_to(ocp.at_t0(constraint::equality(x2 - 2)));
     ocp.subject_to(constraint::upper_bounded(x1, 1).at_path());
-    ocp.subject_to(constraint::upper_bounded(x2, 2).at_terminal());
+    ocp.subject_to(ocp.at_tf(constraint::upper_bounded(x2, 2)));
 
     ocp.make_clean();
     auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp, casadi::Dict());
