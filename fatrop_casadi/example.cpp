@@ -22,8 +22,8 @@ int main()
     ocp.subject_to(ocp.at_t0(constraint::equality(x2 - 2)));
     ocp.subject_to(constraint::upper_bounded(x1, 1).at_path());
     ocp.subject_to(ocp.at_tf(constraint::upper_bounded(x2, 2)));
-
     ocp.make_clean();
+
     auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp, casadi::Dict());
     auto app = fatrop::StageOCPApplication(fatrop);
     app.build();

@@ -9,6 +9,7 @@
 #include "casadi/core/code_generator.hpp"
 #include "casadi/core/importer.hpp"
 #include <limits>
+#include "auxiliary.hpp"
 #define JIT_HACKED_CASADI 0
 namespace fatrop_casadi
 {
@@ -26,17 +27,17 @@ namespace fatrop_casadi
         bool initial = false;
         bool path = false;
         bool terminal = false;
-        const der &at_initial()
+        const der at_initial()
         {
             initial = true;
             return static_cast<der &>(*this);
         }
-        const der &at_path()
+        const der at_path()
         {
             path = true;
             return static_cast<der &>(*this);
         }
-        const der &at_terminal()
+        const der at_terminal()
         {
             terminal = true;
             return static_cast<der &>(*this);
@@ -54,15 +55,15 @@ namespace fatrop_casadi
         }
         static constraint equality(const casadi::MX &c)
         {
-            return constraint{0, c, 0};
+            return constraint(casadi::DM::zeros(c.size1(), c.size2()), c, casadi::DM::zeros(c.size1(), c.size2()));
         }
         static constraint lower_bounded(const casadi::DM &lb, const casadi::MX &c)
         {
-            return constraint{lb, c, std::numeric_limits<double>::infinity()};
+            return constraint{lb, c, std::numeric_limits<double>::infinity()*casadi::DM::ones(c.size1(), c.size2())};
         }
         static constraint upper_bounded(const casadi::MX &c, const casadi::DM &ub)
         {
-            return constraint{-std::numeric_limits<double>::infinity(), c, ub};
+            return constraint{-std::numeric_limits<double>::infinity()*casadi::DM::ones(c.size1(), c.size2()), c, ub};
         }
         static constraint box(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub)
         {
@@ -83,13 +84,6 @@ namespace fatrop_casadi
         int n_stage_params;
         int n_global_params;
         int K;
-    };
-    struct comp_mx
-    {
-        bool operator()(const casadi::MX &a, const casadi::MX &b) const
-        {
-            return a.get() < b.get();
-        }
     };
     struct SingleStage
     {

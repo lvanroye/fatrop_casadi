@@ -133,7 +133,8 @@ namespace fatrop_casadi
             auto beta = -1.0 / casadi::MX::dot(vk, sk);
             auto Bkp1 = Bk + alpha * casadi::MX::mtimes(yk, yk.T()) + beta * casadi::MX::mtimes(vk, vk.T());
             // with skipping
-            Bkp1 = casadi::MX::if_else(casadi::MX::norm_2(sk) * casadi::MX::norm_2(yk) < 1e8 * sty, Bkp1, Bk);
+            Bkp1 = casadi::MX::if_else(casadi::MX::norm_2(sk) * casadi::MX::norm_2(yk) < 1e8* sty, Bkp1, Bk);
+            // Bkp1 = casadi::MX::if_else(casadi::MX::norm_2(sk) * casadi::MX::norm_2(yk) > 1e8* sty, Bkp1, casadi::MX::eye(Bk.size1()));
             // Bkp1 = casadi::MX::if_else(casadi::MX::abs(beta) < 1e10, Bkp1, Bk);
             return Bkp1;
         }
@@ -162,7 +163,7 @@ namespace fatrop_casadi
             {
                 for (int i = 0; i < m; i++)
                 {
-                    vec[i + m * j] = (i == j && i < l) ? 1.0 : 0.0;
+                    vec[i + m * j] = (i == j && i < l) ? 1e0 : 0.0;
                 }
             }
         }
@@ -224,7 +225,7 @@ namespace fatrop_casadi
             eval_BAbtk_func(arg, res);
             return 0;
         };
-        bool bfgs = true;
+        bool bfgs = false;
         int eval_RSQrqtk(const double *objective_scale,
                          const double *inputs_k,
                          const double *states_k,
