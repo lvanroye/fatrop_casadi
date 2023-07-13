@@ -165,12 +165,24 @@ namespace fatrop_casadi
             auto vk = casadi::MX::mtimes(Bk, sk);
             auto stv = casadi::MX::dot(vk, sk);
             auto beta = -1.0 / stv;
-            auto theta_k = casadi::MX::if_else(sty > 0.2 * stv, 1.0, 0.8 * stv / (stv - sty));
-            auto yk_tilde = theta_k * yk + (1.0 - theta_k) * vk;
-            auto sty_tilde = casadi::MX::dot(yk_tilde, sk);
-            auto alpha_tilde = 1.0 / sty_tilde;
-            auto Bkp1 = Bk + alpha_tilde * casadi::MX::mtimes(yk_tilde, yk_tilde.T()) + beta * casadi::MX::mtimes(vk, vk.T());
-            Bkp1 = casadi::MX::if_else(sty != 0.0, Bkp1, Bk);
+            bool powel = true;
+            auto Bkp1 = casadi::MX::zeros(Bk.size1(), Bk.size2());
+            if (powel)
+            {
+                auto theta_k = casadi::MX::if_else(sty > 0.2 * stv, 1.0, 0.8 * stv / (stv - sty));
+                auto yk_tilde = theta_k * yk + (1.0 - theta_k) * vk;
+                auto sty_tilde = casadi::MX::dot(yk_tilde, sk);
+                auto alpha_tilde = 1.0 / sty_tilde;
+                Bkp1 = Bk + alpha_tilde * casadi::MX::mtimes(yk_tilde, yk_tilde.T()) + beta * casadi::MX::mtimes(vk, vk.T());
+                Bkp1 = casadi::MX::if_else(sty != 0.0, Bkp1, Bk);
+            }
+            else
+            {
+                auto alpha = 1.0 / sty;
+                Bkp1 = Bk + alpha * casadi::MX::mtimes(yk, yk.T()) + beta * casadi::MX::mtimes(vk, vk.T());
+                Bkp1 = casadi::MX::if_else(sty > 0, Bkp1, Bk);
+            }
+
             return Bkp1;
         }
         void reset_bfgs()
