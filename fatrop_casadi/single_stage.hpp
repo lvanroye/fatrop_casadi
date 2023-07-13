@@ -111,7 +111,7 @@ namespace fatrop_casadi
             auto x = casadi::MX::sym(name, m, n);
             vec_x.push_back(x);
             map_x_next[x] = casadi::MX::zeros(m, n);
-            map_x_initial[x] = casadi::DM::zeros(m, n);
+            map_x_initial[x] = casadi::DM::zeros(m*n, 1);
             return x;
         }
         casadi::MX control(const std::string &name, int m, int n)
@@ -119,7 +119,7 @@ namespace fatrop_casadi
             dirty = true;
             auto u = casadi::MX::sym(name, m, n);
             vec_u.push_back(u);
-            map_u_initial[u] = casadi::DM::zeros(m, n);
+            map_u_initial[u] = casadi::DM::zeros(m*n,1);
             return u;
         }
         casadi::MX parameter(const std::string &name, int m, int n)

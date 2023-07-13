@@ -115,7 +115,7 @@ namespace fatrop_casadi
                 auto Bk = RSQrqk(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx));
                 auto ux_prev = casadi::MX::sym("ux_prev", nu + ss.dims.nx);
                 // auto rq_prev = RSQrqk(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)).T();
-                auto rq_prev = casadi::MX::substitute(rq, ux, ux_prev);               
+                auto rq_prev = casadi::MX::substitute(rq, ux, ux_prev);
                 auto Bkp1 = update_bfgs(Bk, ux_prev, ux, rq_prev, rq);
                 auto RSQrq_bfgs = casadi::MX::vertcat({Bkp1, rq.T()});
                 sp_p->eval_update_bfgs_func = eval_bf(sx_func_helper(casadi::Function("eval_update_bfgs", {ux_prev, RSQrqk, x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
@@ -123,6 +123,38 @@ namespace fatrop_casadi
                                                                      opts));
             }
             reset_bfgs();
+            reset_initial_guess(ss);
+        };
+        void reset_initial_guess(SingleStage &ss)
+        {
+            x_initial.resize(K_);
+            u_initial.resize(K_);
+            for (auto &v : x_initial)
+                v.resize(0);
+            for (auto &v : u_initial)
+                v.resize(0);
+            for (auto &initial_guess : ss.map_x_initial)
+            {
+                for (int k = 0; k < K_; k++)
+                {
+                    int col = initial_guess.second.size2() == 1 ? 0 : k;
+                    for (size_t i = 0; i < initial_guess.second.size1(); i++)
+                    {
+                        x_initial[k].push_back(initial_guess.second(i, col).scalar());
+                    }
+                }
+            }
+            for (auto &initial_guess : ss.map_u_initial)
+            {
+                for (int k = 0; k < K_ - 1; k++)
+                {
+                    int col = initial_guess.second.size2() == 1 ? 0 : k;
+                    for (size_t i = 0; i < initial_guess.second.size1(); i++)
+                    {
+                        u_initial[k].push_back(initial_guess.second(i, col).scalar());
+                    }
+                }
+            }
         };
         casadi::MX update_bfgs(casadi::MX &Bk, casadi::MX &xk, casadi::MX &xkp1, casadi::MX &gradk, casadi::MX &gradkp1)
         {
@@ -133,12 +165,12 @@ namespace fatrop_casadi
             auto vk = casadi::MX::mtimes(Bk, sk);
             auto stv = casadi::MX::dot(vk, sk);
             auto beta = -1.0 / stv;
-            auto theta_k = casadi::MX::if_else(sty > 0.2*stv, 1.0, 0.8*stv / (stv - sty));
+            auto theta_k = casadi::MX::if_else(sty > 0.2 * stv, 1.0, 0.8 * stv / (stv - sty));
             auto yk_tilde = theta_k * yk + (1.0 - theta_k) * vk;
             auto sty_tilde = casadi::MX::dot(yk_tilde, sk);
             auto alpha_tilde = 1.0 / sty_tilde;
             auto Bkp1 = Bk + alpha_tilde * casadi::MX::mtimes(yk_tilde, yk_tilde.T()) + beta * casadi::MX::mtimes(vk, vk.T());
-            Bkp1 = casadi::MX::if_else(sty !=0.0, Bkp1 , Bk);
+            Bkp1 = casadi::MX::if_else(sty != 0.0, Bkp1, Bk);
             return Bkp1;
         }
         void reset_bfgs()
@@ -228,7 +260,7 @@ namespace fatrop_casadi
             eval_BAbtk_func(arg, res);
             return 0;
         };
-        bool bfgs = false;
+        bool bfgs = true;
         int eval_RSQrqtk(const double *objective_scale,
                          const double *inputs_k,
                          const double *states_k,
@@ -433,10 +465,20 @@ namespace fatrop_casadi
         }
         int get_initial_xk(double *xk, const int k) const override
         {
+            int nx = this->get_nxk(k);
+            for (int i = 0; i < nx; i++)
+            {
+                xk[i] = x_initial[k][i];
+            }
             return 0;
         };
         int get_initial_uk(double *uk, const int k) const override
         {
+            int nu = this->get_nuk(k);
+            for (int i = 0; i < nu; i++)
+            {
+                uk[i] = u_initial[k][i];
+            }
             return 0;
         };
         int set_initial_xk(double *xk, const int k)
@@ -644,6 +686,8 @@ namespace fatrop_casadi
         std::vector<std::vector<double>> RSQrq_bfgs_temp;
         std::vector<std::vector<double>> grad_buf;
         std::vector<std::vector<double>> ux_buff;
+        std::vector<std::vector<double>> u_initial;
+        std::vector<std::vector<double>> x_initial;
         eval_bf eval_BAbtk_func; // OK
         eval_bf eval_bk_func;    // OK
         struct stageproperties
