@@ -114,7 +114,8 @@ namespace fatrop_casadi
                 auto RSQrqk = casadi::MX::sym("RSQrqk", nu + ss.dims.nx + 1, nu + ss.dims.nx);
                 auto Bk = RSQrqk(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx));
                 auto ux_prev = casadi::MX::sym("ux_prev", nu + ss.dims.nx);
-                auto rq_prev = RSQrqk(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)).T();
+                // auto rq_prev = RSQrqk(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)).T();
+                auto rq_prev = casadi::MX::substitute(rq, ux, ux_prev);               
                 auto Bkp1 = update_bfgs(Bk, ux_prev, ux, rq_prev, rq);
                 auto RSQrq_bfgs = casadi::MX::vertcat({Bkp1, rq.T()});
                 sp_p->eval_update_bfgs_func = eval_bf(sx_func_helper(casadi::Function("eval_update_bfgs", {ux_prev, RSQrqk, x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
@@ -126,16 +127,14 @@ namespace fatrop_casadi
         casadi::MX update_bfgs(casadi::MX &Bk, casadi::MX &xk, casadi::MX &xkp1, casadi::MX &gradk, casadi::MX &gradkp1)
         {
             auto sk = xkp1 - xk;
+            auto sts = casadi::MX::dot(sk, sk);
             auto yk = gradkp1 - gradk;
             auto sty = casadi::MX::dot(yk, sk);
             auto alpha = 1.0 / sty;
             auto vk = casadi::MX::mtimes(Bk, sk);
             auto beta = -1.0 / casadi::MX::dot(vk, sk);
             auto Bkp1 = Bk + alpha * casadi::MX::mtimes(yk, yk.T()) + beta * casadi::MX::mtimes(vk, vk.T());
-            // with skipping
-            Bkp1 = casadi::MX::if_else(casadi::MX::norm_2(sk) * casadi::MX::norm_2(yk) < 1e8* sty, Bkp1, Bk);
-            // Bkp1 = casadi::MX::if_else(casadi::MX::norm_2(sk) * casadi::MX::norm_2(yk) > 1e8* sty, Bkp1, casadi::MX::eye(Bk.size1()));
-            // Bkp1 = casadi::MX::if_else(casadi::MX::abs(beta) < 1e10, Bkp1, Bk);
+            Bkp1 = casadi::MX::if_else(sty > 1e-18, Bkp1 , 0.99*Bk+ 0.01*casadi::MX::eye(Bk.size1()));
             return Bkp1;
         }
         void reset_bfgs()
@@ -153,7 +152,7 @@ namespace fatrop_casadi
                 grad_buf[k] = std::vector<double>(nu + nx, 0.0);
                 RSQrq_bfgs_temp[k] = std::vector<double>((nu + nx + 1) * (nu + nx), 0.0);
                 RSQrq_bfgs_buf[k] = std::vector<double>((nu + nx + 1) * (nu + nx), 0.0);
-                set_eye(nu+nx+1, nu+nx, nu+nx, RSQrq_bfgs_buf[k]);
+                set_eye(nu + nx + 1, nu + nx, nu + nx, RSQrq_bfgs_buf[k]);
             }
         }
         void set_eye(const int m, const int n, const int l, std::vector<double> &vec)
@@ -178,19 +177,19 @@ namespace fatrop_casadi
                 }
             }
         }
-        void DM_to_raw(const casadi::DM &in, std::vector<double> &out)
-        {
-            casadi::DM in_dense = casadi::DM::densify(in);
-            // casadi uses column major order
-            out.resize(in_dense.size1() * in_dense.size2());
-            for (size_t i = 0; i < in_dense.size2(); i++)
-            {
-                for (size_t j = 0; j < in_dense.size1(); j++)
-                {
-                    out[i * in_dense.size1() + j] = in_dense(j, i).scalar();
-                }
-            }
-        }
+        // void DM_to_raw(const casadi::DM &in, std::vector<double> &out)
+        // {
+        //     casadi::DM in_dense = casadi::DM::densify(in);
+        //     // casadi uses column major order
+        //     out.resize(in_dense.size1() * in_dense.size2());
+        //     for (size_t i = 0; i < in_dense.size2(); i++)
+        //     {
+        //         for (size_t j = 0; j < in_dense.size1(); j++)
+        //         {
+        //             out[i * in_dense.size1() + j] = in_dense(j, i).scalar();
+        //         }
+        //     }
+        // }
         // double dist_inf(const int m, const double *v1, const double *v2)
         // {
         //     double res = 0.0;
@@ -225,7 +224,7 @@ namespace fatrop_casadi
             eval_BAbtk_func(arg, res);
             return 0;
         };
-        bool bfgs = false;
+        bool bfgs = true;
         int eval_RSQrqtk(const double *objective_scale,
                          const double *inputs_k,
                          const double *states_k,
