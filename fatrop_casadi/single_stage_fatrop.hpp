@@ -130,11 +130,15 @@ namespace fatrop_casadi
             auto sts = casadi::MX::dot(sk, sk);
             auto yk = gradkp1 - gradk;
             auto sty = casadi::MX::dot(yk, sk);
-            auto alpha = 1.0 / sty;
             auto vk = casadi::MX::mtimes(Bk, sk);
-            auto beta = -1.0 / casadi::MX::dot(vk, sk);
-            auto Bkp1 = Bk + alpha * casadi::MX::mtimes(yk, yk.T()) + beta * casadi::MX::mtimes(vk, vk.T());
-            Bkp1 = casadi::MX::if_else(sty > 1e-18, Bkp1 , 0.99*Bk+ 0.01*casadi::MX::eye(Bk.size1()));
+            auto stv = casadi::MX::dot(vk, sk);
+            auto beta = -1.0 / stv;
+            auto theta_k = casadi::MX::if_else(sty > 0.2*stv, 1.0, 0.8*stv / (stv - sty));
+            auto yk_tilde = theta_k * yk + (1.0 - theta_k) * vk;
+            auto sty_tilde = casadi::MX::dot(yk_tilde, sk);
+            auto alpha_tilde = 1.0 / sty_tilde;
+            auto Bkp1 = Bk + alpha_tilde * casadi::MX::mtimes(yk_tilde, yk_tilde.T()) + beta * casadi::MX::mtimes(vk, vk.T());
+            Bkp1 = casadi::MX::if_else(sty !=0.0, Bkp1 , Bk);
             return Bkp1;
         }
         void reset_bfgs()
@@ -224,7 +228,7 @@ namespace fatrop_casadi
             eval_BAbtk_func(arg, res);
             return 0;
         };
-        bool bfgs = true;
+        bool bfgs = false;
         int eval_RSQrqtk(const double *objective_scale,
                          const double *inputs_k,
                          const double *states_k,
