@@ -10,4 +10,13 @@ namespace fatrop_casadi
             return a.get() < b.get();
         }
     };
+
+    template <typename Tinternal>
+    class SharedObj : public std::shared_ptr<Tinternal>
+    {
+    public:
+        template <class... args>
+        SharedObj(args &&...a) : std::shared_ptr<Tinternal>(std::make_shared<Tinternal>(std::forward<args>(a)...)){};
+        operator Tinternal &() { return *this->get(); };
+    };
 }

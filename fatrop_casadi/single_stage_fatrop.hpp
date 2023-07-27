@@ -17,33 +17,184 @@ namespace fatrop_casadi
     typedef int (*eval_t)(const double **arg, double **res,
                           long long int *iw, double *w, int);
 
-    class SingleStageFatropAdapter : public fatrop::StageOCP
+    class eval_bf
     {
     public:
-        SingleStageFatropAdapter(SingleStage &ss, const casadi::Dict &opts = {}) : fatrop::StageOCP(ss.dims.nu, ss.dims.nx, ss.dims.ngI, ss.dims.ng, ss.dims.ngF, ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF, ss.dims.n_stage_params, ss.dims.n_global_params, ss.dims.K), arg(10)
+        eval_bf(){};
+        eval_bf(const casadi::Function &funcin)
         {
-            auto x_sym = casadi::MX::sym("x", ss.dims.nx);
-            auto xp1_sym = casadi::MX::sym("xp1", ss.dims.nx);
-            auto u_sym = casadi::MX::sym("u", ss.dims.nu);
-            auto stage_params_sym = casadi::MX::sym("stage_params", ss.dims.n_stage_params);
-            auto global_params_sym = casadi::MX::sym("global_params", ss.dims.n_global_params);
-            auto BAbt = casadi::MX::zeros(ss.dims.nu + ss.dims.nx + 1, ss.dims.nx);
-            auto b = casadi::MX::zeros(ss.dims.nx, 1);
-            auto x_next_sym = ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
+            m = (int)funcin.size1_out(0);
+            n = (int)funcin.size2_out(0);
+            func = funcin;
+            mem = 0;
+            // allocate work vectors
+            size_t sz_arg,
+                sz_res, sz_iw, sz_w;
+            sz_arg = func.n_in();
+            sz_res = func.n_out();
+            func.sz_work(sz_arg, sz_res, sz_iw, sz_w);
+            iw.resize(sz_iw);
+            w.resize(sz_w);
+            bufout.resize(func.nnz_out(0));
+            bufdata.resize(sz_res);
+            resdata.resize(sz_res);
+            argdata.resize(sz_arg);
+            n_in = func.n_in();
+            fast_jit();
+
+            // resdata = {nullptr};
+            dirty = false;
+        }
+        void fast_jit()
+        {
+            casadi::FunctionInternal *func_internal = func.get();
+            jit_name_ = func.name();
+            jit_name_ = casadi::temporary_file(jit_name_, ".c");
+            jit_name_ = std::string(jit_name_.begin(), jit_name_.begin() + jit_name_.size() - 2);
+            if (func_internal->has_codegen())
+            {
+                // this part is based on casadi/core/function_internal.cpp -- all rights reserved to the original authors
+                // JIT everything
+                casadi::Dict opts;
+                // Override the default to avoid random strings in the generated code
+                opts["prefix"] = "jit";
+                casadi::CodeGenerator gen(jit_name_, opts);
+                gen.add(func);
+                jit_options_ = casadi::Dict({{"flags", "-Ofast -march=native -ffast-math"}});
+                jit_directory = casadi::get_from_dict(jit_options_, "directory", std::string(""));
+                std::string compiler_plugin_ = "shell";
+                compiler_ = casadi::Importer(gen.generate(jit_directory), compiler_plugin_, jit_options_);
+                eval_ = (eval_t)compiler_.get_function(func.name());
+                casadi_assert(eval_ != nullptr, "Cannot load JIT'ed function.");
+                compiled_jit = true;
+            }
+            else
+            {
+                std::cout << "jit compilation not possible for the provided functions" << std::endl;
+            }
+        }
+        std::string jit_name_;
+        casadi::Dict jit_options_;
+        std::string jit_directory;
+        bool compiled_jit = false;
+        void operator=(const eval_bf &other)
+        {
+            // copy all member values
+            m = other.m;
+            n = other.n;
+            n_in = other.n_in;
+            func = other.func;
+            mem = other.mem;
+            bufout = other.bufout;
+            bufdata = other.bufdata;
+            resdata = other.resdata;
+            argdata = other.argdata;
+            iw = other.iw;
+            w = other.w;
+            dirty = other.dirty;
+            fast_jit();
+            // eval_ = other.eval_;
+            // other.eval_ = nullptr;
+        }
+        void operator()(std::vector<const double *> &arg, MAT *res, double *buff)
+        {
+            if (dirty)
+                return;
+            // inputs
+            for (int j = 0; j < n_in; j++)
+                argdata[j] = arg[j];
+            // outputs
+            bufdata[0] = buff;
+#ifdef JIT_HACKED_CASADI
+            eval_(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
+#else
+            func(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
+#endif
+            // func(arg, bufdata);
+            PACKMAT(m, n, buff, m, res, 0, 0);
+        }
+        // copy operator
+        void operator()(std::vector<const double *> &arg, MAT *res)
+        {
+            this->operator()(arg, res, bufout.data());
+        }
+        void operator()(std::vector<const double *> &arg, double *res)
+        {
+            if (dirty)
+                return;
+            // inputs
+            for (int j = 0; j < n_in; j++)
+                argdata[j] = arg[j];
+            // outputs
+            resdata[0] = res;
+#ifdef JIT_HACKED_CASADI
+            eval_(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
+#else
+            func(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
+#endif
+            // func(arg, resdata);
+        }
+        ~eval_bf()
+        {
+            if (compiled_jit)
+            {
+                std::string jit_directory = get_from_dict(jit_options_, "directory", std::string(""));
+                std::string jit_name = jit_directory + jit_name_ + ".c";
+                if (remove(jit_name.c_str()))
+                    casadi_warning("Failed to remove " + jit_name);
+            }
+        }
+        int m;
+        int n;
+        int mem;
+        int n_in;
+        eval_t eval_;
+        casadi::Importer compiler_;
+        std::vector<double> bufout;
+        std::vector<double *> bufdata;
+        std::vector<double *> resdata;
+        std::vector<const double *> argdata;
+        std::vector<long long int> iw;
+        std::vector<double> w;
+        casadi::Function func;
+        bool dirty = true;
+        bool bfgs = true;
+    };
+    // forward declaration
+    class SingleStageFatropAdapterInternal;
+
+    class SingleStageFatropAdapter : public SharedObj<SingleStageFatropAdapterInternal>
+    {
+        using SharedObj<SingleStageFatropAdapterInternal>::SharedObj;
+    };
+
+    class SingleStageFatropAdapterInternal : public fatrop::StageOCP
+    {
+    public:
+        SingleStageFatropAdapterInternal(SingleStage &ss, const casadi::Dict &opts = {}) : fatrop::StageOCP(ss->dims.nu, ss->dims.nx, ss->dims.ngI, ss->dims.ng, ss->dims.ngF, ss->dims.ng_ineqI, ss->dims.ng_ineq, ss->dims.ng_ineqF, ss->dims.n_stage_params, ss->dims.n_global_params, ss->dims.K), arg(10)
+        {
+            auto x_sym = casadi::MX::sym("x", ss->dims.nx);
+            auto xp1_sym = casadi::MX::sym("xp1", ss->dims.nx);
+            auto u_sym = casadi::MX::sym("u", ss->dims.nu);
+            auto stage_params_sym = casadi::MX::sym("stage_params", ss->dims.n_stage_params);
+            auto global_params_sym = casadi::MX::sym("global_params", ss->dims.n_global_params);
+            auto BAbt = casadi::MX::zeros(ss->dims.nu + ss->dims.nx + 1, ss->dims.nx);
+            auto b = casadi::MX::zeros(ss->dims.nx, 1);
+            auto x_next_sym = ss->dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0];
             b = -xp1_sym + x_next_sym;
-            BAbt(casadi::Slice(0, ss.dims.nu + ss.dims.nx), casadi::Slice(0, ss.dims.nx)) = casadi::MX::jacobian(ss.dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0], casadi::MX::vertcat({u_sym, x_sym})).T();
-            BAbt(ss.dims.nu + ss.dims.nx, casadi::Slice(0, ss.dims.nx)) = b;
+            BAbt(casadi::Slice(0, ss->dims.nu + ss->dims.nx), casadi::Slice(0, ss->dims.nx)) = casadi::MX::jacobian(ss->dynamics_func({x_sym, u_sym, stage_params_sym, global_params_sym})[0], casadi::MX::vertcat({u_sym, x_sym})).T();
+            BAbt(ss->dims.nu + ss->dims.nx, casadi::Slice(0, ss->dims.nx)) = b;
             eval_BAbtk_func = eval_bf(sx_func_helper(casadi::Function("eval_BAbtk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(BAbt)}), opts));
             eval_bk_func = eval_bf(sx_func_helper(casadi::Function("eval_bk", {x_sym, xp1_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(b)}), opts));
             std::vector<stageproperties *> sp_vec = {&sp_initial, &sp_middle, &sp_terminal};
-            std::vector<SingleStage::stage_functions *> sf_vec = {&ss.stage_functions_initial, &ss.stage_functions_path, &ss.stage_functions_terminal};
-            std::vector<int> ng_vec = {ss.dims.ngI, ss.dims.ng, ss.dims.ngF};
-            std::vector<int> ng_ineq_vec = {ss.dims.ng_ineqI, ss.dims.ng_ineq, ss.dims.ng_ineqF};
+            std::vector<SingleStageInternal::stage_functions *> sf_vec = {&ss->stage_functions_initial, &ss->stage_functions_path, &ss->stage_functions_terminal};
+            std::vector<int> ng_vec = {ss->dims.ngI, ss->dims.ng, ss->dims.ngF};
+            std::vector<int> ng_ineq_vec = {ss->dims.ng_ineqI, ss->dims.ng_ineq, ss->dims.ng_ineqF};
             for (int i = 0; i < 3; i++)
             {
                 auto sp_p = sp_vec[i];
                 auto sf_p = sf_vec[i];
-                const int nu = (i == 2) ? 0 : ss.dims.nu;
+                const int nu = (i == 2) ? 0 : ss->dims.nu;
                 const int ng = ng_vec[i];
                 const int ng_ineq = ng_ineq_vec[i];
                 auto ux = (i == 2) ? x_sym : casadi::MX::vertcat({u_sym, x_sym});
@@ -54,10 +205,10 @@ namespace fatrop_casadi
                 auto RSQ = casadi::MX::hessian(obj, ux, rq);
                 sp_p->eval_rqk_func = eval_bf(sx_func_helper(casadi::Function("eval_rqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(rq)}), opts));
                 // lagrangian contribution dynamics constraints
-                auto dual_dyn_sym = casadi::MX::sym("dual_dyn", ss.dims.nx);
+                auto dual_dyn_sym = casadi::MX::sym("dual_dyn", ss->dims.nx);
                 if (i != 2)
                 {
-                    auto rq_dyn = casadi::MX::zeros(nu + ss.dims.nx, 1);
+                    auto rq_dyn = casadi::MX::zeros(nu + ss->dims.nx, 1);
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_dyn_sym, x_next_sym), ux, rq_dyn);
                     RSQ += RSQlag;
                     rq += rq_dyn;
@@ -68,14 +219,14 @@ namespace fatrop_casadi
                 {
                     auto eq_sym = sf_p->eq({x_sym, u_sym, stage_params_sym, global_params_sym});
                     auto eq = eq_sym[0];
-                    auto rq_eq = casadi::MX::zeros(nu + ss.dims.nx, 1);
+                    auto rq_eq = casadi::MX::zeros(nu + ss->dims.nx, 1);
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_eq_sym, eq), ux, rq_eq);
                     RSQ += RSQlag;
                     rq += rq_eq;
                     sp_p->eval_gk_func = eval_bf(sx_func_helper(casadi::Function("eval_eqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(eq)}), opts));
-                    auto Ggt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng);
-                    Ggt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng)) = casadi::MX::jacobian(eq, ux).T();
-                    Ggt(nu + ss.dims.nx, casadi::Slice(0, ng)) = eq.T();
+                    auto Ggt = casadi::MX::zeros(nu + ss->dims.nx + 1, ng);
+                    Ggt(casadi::Slice(0, nu + ss->dims.nx), casadi::Slice(0, ng)) = casadi::MX::jacobian(eq, ux).T();
+                    Ggt(nu + ss->dims.nx, casadi::Slice(0, ng)) = eq.T();
                     sp_p->eval_Ggtk_func = eval_bf(sx_func_helper(casadi::Function("eval_Ggtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggt)}), opts));
                 }
                 // lagraigian contribution of inequality constraints
@@ -84,14 +235,14 @@ namespace fatrop_casadi
                 {
                     auto ineq_sym = sf_p->ineq({x_sym, u_sym, stage_params_sym, global_params_sym});
                     auto ineq = ineq_sym[0];
-                    auto rq_ineq = casadi::MX::zeros(nu + ss.dims.nx, 1);
+                    auto rq_ineq = casadi::MX::zeros(nu + ss->dims.nx, 1);
                     auto RSQlag = casadi::MX::hessian(casadi::MX::dot(dual_ineq_sym, ineq), ux, rq_ineq);
                     RSQ += RSQlag;
                     rq += rq_ineq;
                     sp_p->eval_gineqk_func = eval_bf(sx_func_helper(casadi::Function("eval_ineqk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(ineq)}), opts));
-                    auto Ggineqt = casadi::MX::zeros(nu + ss.dims.nx + 1, ng_ineq);
-                    Ggineqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
-                    Ggineqt(nu + ss.dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
+                    auto Ggineqt = casadi::MX::zeros(nu + ss->dims.nx + 1, ng_ineq);
+                    Ggineqt(casadi::Slice(0, nu + ss->dims.nx), casadi::Slice(0, ng_ineq)) = casadi::MX::jacobian(ineq, ux).T();
+                    Ggineqt(nu + ss->dims.nx, casadi::Slice(0, ng_ineq)) = ineq.T();
                     sp_p->eval_Ggt_ineqk_func = eval_bf(sx_func_helper(casadi::Function("eval_Ggineqtk", {x_sym, u_sym, stage_params_sym, global_params_sym}, {casadi::MX::densify(Ggineqt)}), opts));
                     // add inequality bounds
                     sp_p->lower.resize(ng_ineq);
@@ -103,18 +254,18 @@ namespace fatrop_casadi
                     }
                 }
                 // assemble RSQrqt
-                auto RSQrqt = casadi::MX::zeros(nu + ss.dims.nx + 1, nu + ss.dims.nx);
-                RSQrqt(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx)) = RSQ;
-                RSQrqt(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)) = rq.T();
+                auto RSQrqt = casadi::MX::zeros(nu + ss->dims.nx + 1, nu + ss->dims.nx);
+                RSQrqt(casadi::Slice(0, nu + ss->dims.nx), casadi::Slice(0, nu + ss->dims.nx)) = RSQ;
+                RSQrqt(nu + ss->dims.nx, casadi::Slice(0, nu + ss->dims.nx)) = rq.T();
                 // prepare the function
                 sp_p->eval_RSQrqtk_func = eval_bf(sx_func_helper(casadi::Function("eval_RSQrqtk", {x_sym, u_sym, stage_params_sym, global_params_sym, dual_dyn_sym, dual_eq_sym, dual_ineq_sym},
                                                                                   {casadi::MX::densify(RSQrqt)}),
                                                                  opts));
                 // prepare BFGS update function
-                auto RSQrqk = casadi::MX::sym("RSQrqk", nu + ss.dims.nx + 1, nu + ss.dims.nx);
-                auto Bk = RSQrqk(casadi::Slice(0, nu + ss.dims.nx), casadi::Slice(0, nu + ss.dims.nx));
-                auto ux_prev = casadi::MX::sym("ux_prev", nu + ss.dims.nx);
-                // auto rq_prev = RSQrqk(nu + ss.dims.nx, casadi::Slice(0, nu + ss.dims.nx)).T();
+                auto RSQrqk = casadi::MX::sym("RSQrqk", nu + ss->dims.nx + 1, nu + ss->dims.nx);
+                auto Bk = RSQrqk(casadi::Slice(0, nu + ss->dims.nx), casadi::Slice(0, nu + ss->dims.nx));
+                auto ux_prev = casadi::MX::sym("ux_prev", nu + ss->dims.nx);
+                // auto rq_prev = RSQrqk(nu + ss->dims.nx, casadi::Slice(0, nu + ss->dims.nx)).T();
                 auto rq_prev = casadi::MX::substitute(rq, ux, ux_prev);
                 auto Bkp1 = update_bfgs(Bk, ux_prev, ux, rq_prev, rq);
                 auto RSQrq_bfgs = casadi::MX::vertcat({Bkp1, rq.T()});
@@ -125,14 +276,22 @@ namespace fatrop_casadi
             reset_bfgs();
             reset_initial_guess(ss);
         };
-        void reset_initial_guess(SingleStage &ss)
+        void reset_initial_guess(SingleStageInternal &ss)
         {
+            blasfeo_timer timer;
+            blasfeo_tic(&timer);
             x_initial.resize(K_);
             u_initial.resize(K_);
+            int nu = ss.dims.nu;
+            int nx = ss.dims.nx;
             for (auto &v : x_initial)
                 v.resize(0);
             for (auto &v : u_initial)
                 v.resize(0);
+            for (auto &v : x_initial)
+                v.reserve(nx);
+            for (auto &v : u_initial)
+                v.reserve(nu);
             for (auto &initial_guess : ss.map_x_initial)
             {
                 for (int k = 0; k < K_; k++)
@@ -155,6 +314,7 @@ namespace fatrop_casadi
                     }
                 }
             }
+            blasfeo_toc(&timer);
         };
         casadi::MX update_bfgs(casadi::MX &Bk, casadi::MX &xk, casadi::MX &xkp1, casadi::MX &gradk, casadi::MX &gradkp1)
         {
@@ -165,7 +325,7 @@ namespace fatrop_casadi
             auto vk = casadi::MX::mtimes(Bk, sk);
             auto stv = casadi::MX::dot(vk, sk);
             auto beta = -1.0 / stv;
-            bool powel = true;
+            bool powel = false;
             auto Bkp1 = casadi::MX::zeros(Bk.size1(), Bk.size2());
             if (powel)
             {
@@ -272,7 +432,7 @@ namespace fatrop_casadi
             eval_BAbtk_func(arg, res);
             return 0;
         };
-        bool bfgs = true;
+        bool bfgs = false;
         int eval_RSQrqtk(const double *objective_scale,
                          const double *inputs_k,
                          const double *states_k,
@@ -286,7 +446,6 @@ namespace fatrop_casadi
         {
             if (bfgs)
             {
-
                 int nu = this->get_nuk(k);
                 int nx = this->get_nxk(k);
                 arg[0] = ux_buff[k].data();
@@ -551,149 +710,6 @@ namespace fatrop_casadi
         }
 
     private:
-        class eval_bf
-        {
-        public:
-            eval_bf(){};
-            eval_bf(const casadi::Function &funcin)
-            {
-                m = (int)funcin.size1_out(0);
-                n = (int)funcin.size2_out(0);
-                func = funcin;
-                mem = 0;
-                // allocate work vectors
-                size_t sz_arg,
-                    sz_res, sz_iw, sz_w;
-                sz_arg = func.n_in();
-                sz_res = func.n_out();
-                func.sz_work(sz_arg, sz_res, sz_iw, sz_w);
-                iw.resize(sz_iw);
-                w.resize(sz_w);
-                bufout.resize(func.nnz_out(0));
-                bufdata.resize(sz_res);
-                resdata.resize(sz_res);
-                argdata.resize(sz_arg);
-                n_in = func.n_in();
-                fast_jit();
-
-                // resdata = {nullptr};
-                dirty = false;
-            }
-            void fast_jit()
-            {
-                casadi::FunctionInternal *func_internal = func.get();
-                jit_name_ = func.name();
-                jit_name_ = casadi::temporary_file(jit_name_, ".c");
-                jit_name_ = std::string(jit_name_.begin(), jit_name_.begin() + jit_name_.size() - 2);
-                if (func_internal->has_codegen())
-                {
-                    // this part is based on casadi/core/function_internal.cpp -- all rights reserved to the original authors
-                    // JIT everything
-                    casadi::Dict opts;
-                    // Override the default to avoid random strings in the generated code
-                    opts["prefix"] = "jit";
-                    casadi::CodeGenerator gen(jit_name_, opts);
-                    gen.add(func);
-                    jit_options_ = casadi::Dict({{"flags", "-Ofast -march=native -ffast-math"}});
-                    jit_directory = casadi::get_from_dict(jit_options_, "directory", std::string(""));
-                    std::string compiler_plugin_ = "shell";
-                    compiler_ = casadi::Importer(gen.generate(jit_directory), compiler_plugin_, jit_options_);
-                    eval_ = (eval_t)compiler_.get_function(func.name());
-                    casadi_assert(eval_ != nullptr, "Cannot load JIT'ed function.");
-                    compiled_jit = true;
-                }
-                else
-                {
-                    std::cout << "jit compilation not possible for the provided functions" << std::endl;
-                }
-            }
-            std::string jit_name_;
-            casadi::Dict jit_options_;
-            std::string jit_directory;
-            bool compiled_jit = false;
-            void operator=(const eval_bf &other)
-            {
-                // copy all member values
-                m = other.m;
-                n = other.n;
-                n_in = other.n_in;
-                func = other.func;
-                mem = other.mem;
-                bufout = other.bufout;
-                bufdata = other.bufdata;
-                resdata = other.resdata;
-                argdata = other.argdata;
-                iw = other.iw;
-                w = other.w;
-                dirty = other.dirty;
-                fast_jit();
-                // eval_ = other.eval_;
-                // other.eval_ = nullptr;
-            }
-            void operator()(std::vector<const double *> &arg, MAT *res, double *buff)
-            {
-                if (dirty)
-                    return;
-                // inputs
-                for (int j = 0; j < n_in; j++)
-                    argdata[j] = arg[j];
-                // outputs
-                bufdata[0] = buff;
-#ifdef JIT_HACKED_CASADI
-                eval_(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
-#else
-                func(argdata.data(), bufdata.data(), iw.data(), w.data(), 0);
-#endif
-                // func(arg, bufdata);
-                PACKMAT(m, n, buff, m, res, 0, 0);
-            }
-            // copy operator
-            void operator()(std::vector<const double *> &arg, MAT *res)
-            {
-                this->operator()(arg, res, bufout.data());
-            }
-            void operator()(std::vector<const double *> &arg, double *res)
-            {
-                if (dirty)
-                    return;
-                // inputs
-                for (int j = 0; j < n_in; j++)
-                    argdata[j] = arg[j];
-                // outputs
-                resdata[0] = res;
-#ifdef JIT_HACKED_CASADI
-                eval_(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
-#else
-                func(argdata.data(), resdata.data(), iw.data(), w.data(), 0);
-#endif
-                // func(arg, resdata);
-            }
-            ~eval_bf()
-            {
-                if (compiled_jit)
-                {
-                    std::string jit_directory = get_from_dict(jit_options_, "directory", std::string(""));
-                    std::string jit_name = jit_directory + jit_name_ + ".c";
-                    if (remove(jit_name.c_str()))
-                        casadi_warning("Failed to remove " + jit_name);
-                }
-            }
-            int m;
-            int n;
-            int mem;
-            int n_in;
-            eval_t eval_;
-            casadi::Importer compiler_;
-            std::vector<double> bufout;
-            std::vector<double *> bufdata;
-            std::vector<double *> resdata;
-            std::vector<const double *> argdata;
-            std::vector<long long int> iw;
-            std::vector<double> w;
-            casadi::Function func;
-            bool dirty = true;
-            bool bfgs = true;
-        };
         std::vector<std::vector<double>> RSQrq_bfgs_buf;
         std::vector<std::vector<double>> RSQrq_bfgs_temp;
         std::vector<std::vector<double>> grad_buf;

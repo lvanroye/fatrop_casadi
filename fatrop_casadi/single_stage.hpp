@@ -59,15 +59,41 @@ namespace fatrop_casadi
         }
         static constraint lower_bounded(const casadi::DM &lb, const casadi::MX &c)
         {
-            return constraint{lb, c, std::numeric_limits<double>::infinity()*casadi::DM::ones(c.size1(), c.size2())};
+            return constraint{lb, c, std::numeric_limits<double>::infinity() * casadi::DM::ones(c.size1(), c.size2())};
         }
         static constraint upper_bounded(const casadi::MX &c, const casadi::DM &ub)
         {
-            return constraint{-std::numeric_limits<double>::infinity()*casadi::DM::ones(c.size1(), c.size2()), c, ub};
+            return constraint{-std::numeric_limits<double>::infinity() * casadi::DM::ones(c.size1(), c.size2()), c, ub};
         }
         static constraint box(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub)
         {
             return constraint{lb, c, ub};
+        }
+    };
+
+    class ConstraintsAuxiliary
+    {
+    public:
+        void seperate_constraints(const casadi::DM &lbs, const casadi::MX &eqs, const casadi::DM &ubs, casadi::MX &eq, casadi::DM &lb, casadi::MX &ineq, casadi::DM &ub)
+        {
+            using casadi::MX;
+            eq = casadi::MX::zeros(0, 0);
+            ineq = casadi::MX::zeros(0, 0);
+            lb = casadi::DM::zeros(0, 0);
+            ub = casadi::DM::zeros(0, 0);
+            for (int i = 0; i < eqs.rows(); i++)
+            {
+                if ((double)lbs(i, 0) == (double)ubs(i, 0))
+                {
+                    eq = vertcat(eq, eqs(i, 0) - lbs(i, 0));
+                }
+                else
+                {
+                    ineq = vertcat(ineq, eqs(i, 0));
+                    lb = vertcat(lb, lbs(i, 0));
+                    ub = vertcat(ub, ubs(i, 0));
+                }
+            }
         }
     };
 
@@ -85,7 +111,7 @@ namespace fatrop_casadi
         int n_global_params;
         int K;
     };
-    struct SingleStage
+    struct SingleStageInternal
     {
         constraint at_t0(const constraint &c)
         {
@@ -97,7 +123,7 @@ namespace fatrop_casadi
             constraint res = c;
             return res.at_terminal();
         }
-        SingleStage(const int K)
+        SingleStageInternal(const int K = 50)
         {
             dims.K = K;
             dirty = true;
@@ -111,15 +137,21 @@ namespace fatrop_casadi
             auto x = casadi::MX::sym(name, m, n);
             vec_x.push_back(x);
             map_x_next[x] = casadi::MX::zeros(m, n);
-            map_x_initial[x] = casadi::DM::zeros(m*n, 1);
+            map_x_initial[x] = casadi::DM::zeros(m * n, 1);
             return x;
+        }
+        bool depends_on(const casadi::MX &x)
+        {
+            auto x_vec = veccat(vec_x);
+            auto u_vec = veccat(vec_u);
+            return casadi::MX::depends_on(x, x_vec) || casadi::MX::depends_on(x, u_vec);
         }
         casadi::MX control(const std::string &name, int m, int n)
         {
             dirty = true;
             auto u = casadi::MX::sym(name, m, n);
             vec_u.push_back(u);
-            map_u_initial[u] = casadi::DM::zeros(m*n,1);
+            map_u_initial[u] = casadi::DM::zeros(m * n, 1);
             return u;
         }
         casadi::MX parameter(const std::string &name, int m, int n)
@@ -256,26 +288,6 @@ namespace fatrop_casadi
                 sum += x;
             return sum;
         }
-        void seperate_constraints(const casadi::DM &lbs, const casadi::MX &eqs, const casadi::DM &ubs, casadi::MX &eq, casadi::DM &lb, casadi::MX &ineq, casadi::DM &ub)
-        {
-            eq = casadi::MX::zeros(0, 0);
-            ineq = casadi::MX::zeros(0, 0);
-            lb = casadi::DM::zeros(0, 0);
-            ub = casadi::DM::zeros(0, 0);
-            for (int i = 0; i < eqs.rows(); i++)
-            {
-                if ((double)lbs(i, 0) == (double)ubs(i, 0))
-                {
-                    eq = vertcat(eq, eqs(i, 0) - lbs(i, 0));
-                }
-                else
-                {
-                    ineq = vertcat(ineq, eqs(i, 0));
-                    lb = vertcat(lb, lbs(i, 0));
-                    ub = vertcat(ub, ubs(i, 0));
-                }
-            }
-        }
         void make_clean()
         {
             using casadi::MX;
@@ -313,7 +325,7 @@ namespace fatrop_casadi
                 casadi::DM lb;
                 casadi::DM ub;
                 auto ineq = casadi::MX::zeros(0, 1);
-                seperate_constraints(lbs, eqs, ubs, eq, lb, ineq, ub);
+                ConstraintsAuxiliary().seperate_constraints(lbs, eqs, ubs, eq, lb, ineq, ub);
                 stage_functions_curr.eq = casadi::Function("eq", {x, u, p, p_stage}, {eq}, {"x", "u", "p", "p_stage"}, {"eq"});
                 stage_functions_curr.ineq = casadi::Function("ineq", {x, u, p, p_stage}, {ineq}, {"x", "u", "p", "p_stage"}, {"ineq"});
                 stage_functions_curr.ineq_lb = lb;
@@ -325,5 +337,74 @@ namespace fatrop_casadi
         // add all variables of map_initial_x to initial_x
         bool dirty = true;
     };
+    struct SingleStage : public SharedObj<SingleStageInternal>
+    {
+        using SharedObj<SingleStageInternal>::SharedObj;
+        constraint at_t0(const constraint &c)
+        {
+            return get()->at_t0(c);
+        }
+        constraint at_tf(const constraint &c)
+        {
+            return get()->at_tf(c);
+        }
+        casadi::MX state(const std::string &name, int m, int n)
+        {
+            return get()->state(name, m, n);
+        }
+        bool depends_on(const casadi::MX &x)
+        {
+            return get()->depends_on(x);
+        }
+        casadi::MX control(const std::string &name, int m, int n)
+        {
+            return get()->control(name, m, n);
+        }
+        casadi::MX parameter(const std::string &name, int m, int n)
+        {
+            return get()->parameter(name, m, n);
+        }
+        casadi::MX stage_parameter(const std::string &name, int m, int n)
+        {
+            return get()->stage_parameter(name, m, n);
+        }
+        void subject_to(const constraint &constraints)
+        {
+            get()->subject_to(constraints);
+        }
+        void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, const std::unordered_set<stage> &stages)
+        {
+            get()->subject_to(lb, c, ub, stages);
+        }
+        void subject_to(const casadi::DM &lb, const casadi::MX &c, const casadi::DM &ub, bool initial, bool middle, bool terminal)
+        {
+            get()->subject_to(lb, c, ub, initial, middle, terminal);
+        }
+        void add_objective(const casadi::MX &c, const std::unordered_set<stage> &stages)
+        {
+            get()->add_objective(c, stages);
+        }
+        void add_objective(const casadi::MX &c, bool initial, bool middle, bool terminal)
+        {
+            get()->add_objective(c, initial, middle, terminal);
+        };
+        void set_next(const casadi::MX &x, const casadi::MX &x_next)
+        {
+            get()->set_next(x, x_next);
+        }
+        void set_initial(const casadi::MX &x, const casadi::DM &value)
+        {
+            get()->set_initial(x, value);
+        }
+        void set_value(const casadi::MX &x, const casadi::DM &value)
+        {
+            this->get()->set_value(x, value);
+        }
+        void make_clean()
+        {
+            this->get()->make_clean();
+        }
+    };
+
 
 } // namespace fatrop_casadi

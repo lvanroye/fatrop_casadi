@@ -17,7 +17,7 @@ using namespace fatrop_casadi;
 int main()
 {
     auto ocp = SingleStage(50);
-    double dt = 0.05;
+    double dt = 0.02;
     double m = 1.0;
     double g = 9.81;
     double I = 0.1;
@@ -58,6 +58,7 @@ int main()
     ocp.subject_to(ocp.at_t0(constraint::equality(theta)));
     ocp.subject_to(ocp.at_t0(constraint::equality(dtheta)));
     ocp.subject_to(ocp.at_tf(constraint::equality(p - casadi::DM({5., 5.}))));
+    ocp.subject_to(ocp.at_tf(constraint::equality(dp)));
 
     ocp.set_initial(F1, {5.});
     ocp.set_initial(F2, {5.});
@@ -67,11 +68,12 @@ int main()
     // self.ocp.subject_to(self.ocp.at_tf(self.dp) == [0, 0])
 
     ocp.make_clean();
-    auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp, casadi::Dict());
+    auto fatrop = SingleStageFatropAdapter(ocp, casadi::Dict());
     auto app = fatrop::StageOCPApplication(fatrop);
     app.build();
-    app.set_option("mu_init", 1e-1);
-    app.set_option("recalc_y", true);
+    app.set_option("mu_init", 1e2);
+    app.set_option("recalc_y", false);
+    app.set_option("tol", 1e-6);
     app.optimize();
     return 0;
 }

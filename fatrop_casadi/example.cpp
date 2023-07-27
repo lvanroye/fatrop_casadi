@@ -1,4 +1,5 @@
 #include "single_stage.hpp"
+#include "multi_stage.hpp"
 #include "single_stage_opti.hpp"
 #include "single_stage_fatrop.hpp"
 #include <casadi/casadi.hpp>
@@ -24,7 +25,7 @@ int main()
     ocp.subject_to(ocp.at_tf(constraint::upper_bounded(x2, 2)));
     ocp.make_clean();
 
-    auto fatrop = std::make_shared<SingleStageFatropAdapter>(ocp, casadi::Dict());
+    auto fatrop = SingleStageFatropAdapter(ocp, casadi::Dict());
     auto app = fatrop::StageOCPApplication(fatrop);
     app.build();
     app.set_option("mu_init", 1e-1);

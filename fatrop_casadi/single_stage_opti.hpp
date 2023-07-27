@@ -12,9 +12,9 @@ namespace fatrop_casadi
     class SingleStageOptiAdapter
     {
     public:
-        SingleStageOptiAdapter(SingleStage &ss)
+        SingleStageOptiAdapter(SingleStage&ss)
         {
-            ss.make_clean();
+            ss -> make_clean();
             // add variables
             add_variables(ss, opti);
             // add constraints
@@ -22,7 +22,7 @@ namespace fatrop_casadi
             // add objective
             add_objective(ss, opti);
         };
-        void add_variables(const SingleStage &ss, casadi::Opti &opti)
+        void add_variables(const SingleStageInternal&ss, casadi::Opti &opti)
         {
             // add x variables to opti
             for (int k = 0; k < ss.dims.K; k++)
@@ -36,7 +36,7 @@ namespace fatrop_casadi
             // add the global parameters to opti
             global_params = opti.parameter(ss.dims.n_global_params);
         }
-        void add_constraints(const SingleStage &ss, casadi::Opti &opti)
+        void add_constraints(const SingleStageInternal&ss, casadi::Opti &opti)
         {
 
             // add the dynamics constraints
@@ -61,7 +61,7 @@ namespace fatrop_casadi
             if (ss.dims.ng_ineqF > 0)
                 opti.subject_to(casadi::Opti::bounded(ss.stage_functions_terminal.ineq_lb, ss.stage_functions_terminal.ineq({x[ss.dims.K - 1], u[ss.dims.K - 2], stage_params[ss.dims.K - 1], global_params})[0], ss.stage_functions_terminal.ineq_ub));
         }
-        void add_objective(const SingleStage &ss, casadi::Opti &opti)
+        void add_objective(const SingleStageInternal&ss, casadi::Opti &opti)
         {
             auto J = casadi::MX::zeros(1);
             // add the initial objective
